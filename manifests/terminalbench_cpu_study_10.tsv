@@ -1,0 +1,10 @@
+count-dataset-tokens	runs/terminalbench/count-dataset-tokens/base_task	prompts/tbench_count_dataset_tokens.txt
+csv-to-parquet	runs/terminalbench/csv-to-parquet/base_task	prompts/tbench_csv_to_parquet.txt
+cprofiling-python	runs/terminalbench/cprofiling-python/base_task	prompts/tbench_cprofiling_python.txt
+broken-python	runs/terminalbench/broken-python/base_task	prompts/tbench_broken_python.txt
+debug-long-program	runs/terminalbench/debug-long-program/base_task	prompts/tbench_debug_long_program.txt
+analyze-access-logs	runs/terminalbench/analyze-access-logs/base_task	prompts/tbench_analyze_access_logs.txt
+deterministic-tarball	runs/terminalbench/deterministic-tarball/base_task	prompts/tbench_deterministic_tarball.txt
+fix-git	runs/terminalbench/fix-git/base_task	prompts/tbench_fix_git.txt
+git-multibranch	runs/terminalbench/git-multibranch/base_task	prompts/tbench_git_multibranch.txt
+fix-pandas-version	runs/terminalbench/fix-pandas-version/base_task	prompts/tbench_fix_pandas_version.txt

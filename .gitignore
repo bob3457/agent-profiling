@@ -1,0 +1,97 @@
+# ============================================================
+# agent-profiling .gitignore
+# Track: scripts/, configs/, codex_hooks/, manifests/, prompts/,
+#        README, the shell.rs patcher.
+# Ignore: everything generated, vendored, or measured.
+# ============================================================
+
+# --- vendored codex source + build output (record upstream commit
+#     hash + patch script in the README instead of committing the tree)
+agent-src/
+codex-src/
+
+# --- toolchains installed into the repo root (x86 and arm homes)
+.cargo/
+.cargo-arm/
+.rustup/
+.rustup-arm/
+go/
+
+# --- self-built OpenSSL and other from-source deps
+openssl-*/
+*.tar.gz
+*.tar.xz
+*.tgz
+
+# --- conda/python environments if created in-tree
+envs/
+miniforge*/
+miniconda*/
+.venv/
+venv/
+
+# --- measurement outputs (large, regenerable, machine-specific)
+results_profiled/
+results_cpu_deepdive/
+results_cpu_record/
+results_cpu_waittrace/
+results_cpu_optimized/
+results_cpu_binding/
+results_cpu_optimization_compare/
+results_cpu_binding_compare/
+results_holistic_optimization_summary*/
+results_*/
+
+# --- materialized task workspaces (regenerable from manifests + datasets;
+#     SWE-bench base_repo clones alone can be gigabytes)
+runs/
+
+# --- per-run scratch and caches
+opt_cache/
+tool_perf/
+shell_snapshots/
+logs/
+*.log
+
+# --- perf / profiling artifacts that escape the results dirs
+perf.data
+perf.data.old
+*.perf_stat.csv
+strace/
+trace.*
+
+# --- wiki corpus + index for canonical fullwiki (multi-GB; document
+#     the download URL + ingest command in the README)
+wiki/corpus/
+wiki/*.bz2
+wiki/*.db
+wiki/*.sqlite
+enwiki-*/
+
+# --- python noise
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+# --- editor / OS noise
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# --- secrets: never commit keys or codex auth state
+.env
+*.key
+auth.json
+.codex/
+
+# ============================================================
+# Deliberately TRACKED (do not add these):
+#   manifests/   - defines which examples the study ran (tiny, provenance)
+#   prompts/     - exact prompts sent to the agent (tiny, provenance)
+#   configs/     - PERF_EVENTS lists, cpu binding envs
+#   scripts/     - all runners, wrappers, materializers, analyzers
+#   codex_hooks/ - hook script + hooks.json
+# ============================================================

@@ -1,0 +1,12 @@
+You are answering a HotpotQA question in the FULLWIKI setting.
+No context passages are provided. Use your web search tool to find the
+evidence on Wikipedia, then answer.
+
+Question: The director of the romantic comedy "Big Stone Gap" is based in what New York city?
+
+Rules:
+- Search the web as needed; multi-hop questions usually need 2+ searches.
+- The answer is a short span (a name, date, number, yes/no, or short phrase).
+- Do not run shell commands; this is a question-answering task, not a coding task.
+- End your reply with exactly one line of the form:
+FINAL ANSWER: <answer>

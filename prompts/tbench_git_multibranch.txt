@@ -1,0 +1,9 @@
+You are in a Terminal-Bench-style task workspace.
+
+Your goal:
+1. Read instruction.txt.
+2. Modify or create required files.
+3. Run ./verify.sh if it exists.
+4. Stop only after the task is complete.
+
+Task id: git-multibranch
