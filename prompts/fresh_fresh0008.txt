@@ -1,0 +1,12 @@
+You are answering a FreshQA question. These questions may
+depend on current, recently changed, or false-premise facts, so you MUST use
+your web search tool to verify against the live web before answering.
+
+Question: When did Frontier purchase Spirit Airlines?
+
+Rules:
+- Search the web; do not answer from memory alone.
+- If the question contains a false premise, say so and correct it.
+- Do not run shell commands; this is a question-answering task.
+- Give a concise answer, then end your reply with exactly one line:
+FINAL ANSWER: <answer>

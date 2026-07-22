@@ -1,0 +1,114 @@
+{
+  "fresh0000": {
+    "id": "0",
+    "question": "What is the name of the first animal to land on the moon?",
+    "reference_answers": [
+      "No animal has ever landed on the moon yet.",
+      "Since humans are animals, one could say Neil Armstrong."
+    ],
+    "false_premise": "TRUE",
+    "fact_type": "slow-changing",
+    "num_hops": "one-hop",
+    "qid": "fresh0000"
+  },
+  "fresh0001": {
+    "id": "1",
+    "question": "What is the name of Leonardo DiCaprio's third child?",
+    "reference_answers": [
+      "Leonardo DiCaprio does not have any children."
+    ],
+    "false_premise": "TRUE",
+    "fact_type": "slow-changing",
+    "num_hops": "one-hop",
+    "qid": "fresh0001"
+  },
+  "fresh0002": {
+    "id": "2",
+    "question": "What year did the first human land on Mars?",
+    "reference_answers": [
+      "No humans have been to Mars yet."
+    ],
+    "false_premise": "TRUE",
+    "fact_type": "slow-changing",
+    "num_hops": "one-hop",
+    "qid": "fresh0002"
+  },
+  "fresh0003": {
+    "id": "3",
+    "question": "What was the name of the Zodiac killer?",
+    "reference_answers": [
+      "The Zodiac Killer has not been identified."
+    ],
+    "false_premise": "TRUE",
+    "fact_type": "slow-changing",
+    "num_hops": "one-hop",
+    "qid": "fresh0003"
+  },
+  "fresh0004": {
+    "id": "4",
+    "question": "Why are all quickly verifiable problems also quickly solvable?",
+    "reference_answers": [
+      "This is the P versus NP problem and it remains open.",
+      "Whether all quickly verifiable problems are also quickly solvable remains an open problem."
+    ],
+    "false_premise": "TRUE",
+    "fact_type": "slow-changing",
+    "num_hops": "one-hop",
+    "qid": "fresh0004"
+  },
+  "fresh0005": {
+    "id": "5",
+    "question": "In what year did bodybuilding become an Olympic sport?",
+    "reference_answers": [
+      "Bodybuilding is not an Olympic sport."
+    ],
+    "false_premise": "TRUE",
+    "fact_type": "slow-changing",
+    "num_hops": "one-hop",
+    "qid": "fresh0005"
+  },
+  "fresh0006": {
+    "id": "6",
+    "question": "When did Meta move its headquarters to Austin?",
+    "reference_answers": [
+      "Meta has never had its headquarters in Austin. Its headquarters are located in Menlo Park, California."
+    ],
+    "false_premise": "TRUE",
+    "fact_type": "slow-changing",
+    "num_hops": "one-hop",
+    "qid": "fresh0006"
+  },
+  "fresh0007": {
+    "id": "7",
+    "question": "When was the chapter of alpha Kappa Delta Phi established at American University?",
+    "reference_answers": [
+      "The alpha Kappa Delta Phi sorority does not have a chapter at American University."
+    ],
+    "false_premise": "TRUE",
+    "fact_type": "slow-changing",
+    "num_hops": "one-hop",
+    "qid": "fresh0007"
+  },
+  "fresh0008": {
+    "id": "8",
+    "question": "When did Frontier purchase Spirit Airlines?",
+    "reference_answers": [
+      "Frontier Airlines did not purchase Spirit Airlines; the deal was called off."
+    ],
+    "false_premise": "TRUE",
+    "fact_type": "slow-changing",
+    "num_hops": "one-hop",
+    "qid": "fresh0008"
+  },
+  "fresh0009": {
+    "id": "9",
+    "question": "When was the permanent cure for cancer developed?",
+    "reference_answers": [
+      "There is currently no permanent cure for cancer."
+    ],
+    "false_premise": "TRUE",
+    "fact_type": "slow-changing",
+    "num_hops": "one-hop",
+    "qid": "fresh0009"
+  }
+}
