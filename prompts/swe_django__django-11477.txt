@@ -1,0 +1,19 @@
+You are working on a SWE-bench instance.
+Instance id: django__django-11477
+Repository: django/django
+Base commit: e28671187903e6aca2428374fdd504fca3032aee
+
+Problem statement:
+translate_url() creates an incorrect URL when optional named groups are missing in the URL pattern
+Description
+	
+There is a problem when translating urls with absent 'optional' arguments
+(it's seen in test case of the patch)
+
+
+Instructions:
+1. Inspect the repository.
+2. Make the minimal code change to fix the issue.
+3. Run relevant tests if possible.
+4. Do not make unrelated changes.
+5. Summarize files changed and validation performed.
