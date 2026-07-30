@@ -31,6 +31,15 @@ CODEX_BIN=${CODEX_BIN:-${CODEX_SRC_BIN:-codex}}
 PERF_EVENTS=${PERF_EVENTS:-task-clock,context-switches,page-faults}
 RESULTS=${RESULTS:-/scratch/czhai/latency-eval/results/arm_$ARM.$(date +%Y%m%d_%H%M%S)}
 
+if [[ "${DEEPDIVE:-0}" == "1" ]]; then
+  if [[ $ARM == A ]]; then
+    export CODEX_TOOL_PERF_WRAPPER=$ROOT/scripts/codex_tool_perf_wrap.sh
+  else
+    export SESSIOND_PERF_EVENTS="$PERF_EVENTS"
+  fi
+  echo "DEEPDIVE=1: per-command perf active for arm $ARM"
+fi
+
 command -v perf >/dev/null || { echo "no perf on this node"; exit 1; }
 [[ -f "$EVAL_SET" ]] || { echo "missing $EVAL_SET (run gen_eval_set.sh)"; exit 1; }
 mkdir -p "$RESULTS"
@@ -57,19 +66,21 @@ run_one() {  # $1 bench, $2 task_id
   local prompt workdir
   case $bench in
     hotpotqa)
-      prompt=$(awk -F'\t' -v q="$tid" '$1==q {print $2; exit}' "$HOTPOT_MANIFEST")
-      [[ -z "$prompt" ]] && { echo "  SKIP: qid $tid not in manifest"; return; }
-      prompt="Answer the following question concisely. Question: $prompt"
+      # manifest columns: qid <TAB> base_task_path <TAB> prompt_file
+      local pf
+      pf=$(awk -F'\t' -v q="$tid" '$1==q {print $3; exit}' "$HOTPOT_MANIFEST")
+      [[ -z "$pf" ]] && { echo "  SKIP: qid $tid not in manifest"; return; }
+      [[ -f "$ROOT/$pf" ]] || { echo "  SKIP: prompt file missing: $ROOT/$pf"; return; }
+      prompt=$(cat "$ROOT/$pf")
       workdir=$run_dir/work; mkdir -p "$workdir"
       ;;
     swebench)
       workdir=$WS_ROOT/$tid
-      local ps=$WS_ROOT/problem_statements/$tid.md
-      [[ -d "$workdir" && -f "$ps" ]] || { echo "  SKIP: workspace/statement missing for $tid"; return; }
+      [[ -d "$workdir" ]] || { echo "  SKIP: workspace missing for $tid"; return; }
       git -C "$workdir" reset --hard -q 2>/dev/null; git -C "$workdir" clean -fdq 2>/dev/null
-      prompt="You are working in a checkout of ${tid%%__*}. Fix the following issue. Modify the repository code; do not just describe a fix.
-
-$(cat "$ps")"
+      local pfile=$ROOT/prompts/swe_$tid.txt
+      [[ -f "$pfile" ]] || { echo "  SKIP: prompt missing at $pfile"; return; }
+      prompt=$(cat "$pfile")
       ;;
     terminalbench)
       workdir=""
@@ -77,9 +88,13 @@ $(cat "$ps")"
         [[ -d "$cand" ]] && workdir=$cand && break
       done
       [[ -z "$workdir" ]] && { echo "  SKIP: task dir missing for $tid"; return; }
+      TB_PRISTINE=${TB_PRISTINE:-/scratch/czhai/latency-eval/tb_pristine}
+      if [[ -d "$TB_PRISTINE/$tid/base_task" ]]; then
+        rsync -a --delete "$TB_PRISTINE/$tid/base_task/" "$workdir/"
+      fi
       local pfile=""
       for cand in "$TB_TASKS_DIR/$tid/prompt.txt" "$TB_TASKS_DIR/$tid/task.txt" \
-                  "$workdir/prompt.txt" "$workdir/task.txt"; do
+                  "$workdir/prompt.txt" "$workdir/task.txt" "$workdir/instruction.txt"; do
         [[ -f "$cand" ]] && pfile=$cand && break
       done
       [[ -z "$pfile" ]] && { echo "  SKIP: no prompt file for $tid (looked for prompt.txt/task.txt)"; return; }
@@ -100,18 +115,22 @@ $(cat "$ps")"
       gate=$(python3 "$OPT/speculation/spec_gate.py" --benchmark "$bench" --workspace "$workdir")
       echo "$gate" > "$run_dir/gate.json"
       if echo "$gate" | grep -q '"speculate": true'; then
+        PS_ARG=""
+        [[ $bench == swebench && -f $ROOT/prompts/swe_$tid.txt ]] && PS_ARG="--problem-statement $ROOT/prompts/swe_$tid.txt"
         nohup python3 "$OPT/speculation/speculative_worker.py" \
           --workspace "$workdir" --cache-dir "$CODEX_SHELLD_SPEC" --benchmark "$bench" \
-          > "$run_dir/spec.log" 2>&1 &
+          --predictor both --ledger-dir "$ROOT/latency-opt/ledger" \
+          $PS_ARG > "$run_dir/spec.log" 2>&1 &
         echo $! > "$run_dir/spec.pid"
       fi
     fi
 
     # ---- the run, whole-run perf + wall time --------------------------------
     cd "$workdir"
+    if [[ "${DEEPDIVE:-0}" == "1" && $ARM == A ]]; then export CODEX_TOOL_PERF_DIR="$run_dir/tool_perf"; mkdir -p "$CODEX_TOOL_PERF_DIR"; fi
     /usr/bin/time -v -o "$run_dir/time.txt" \
       perf stat -e "$PERF_EVENTS" -o "$run_dir/perf_stat.txt" -- \
-      "$CODEX_BIN" exec --sandbox danger-full-access "$prompt" \
+      "$CODEX_BIN" exec --json --skip-git-repo-check --sandbox danger-full-access "$prompt" \
         > "$run_dir/stdout.jsonl" 2> "$run_dir/stderr.log"
     echo $? > "$run_dir/exit_code"
   )

@@ -85,7 +85,7 @@ class ShellSession:
             args,
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=open(os.path.join(self.ctl_dir, "session_bash.stderr"), "w"),
             start_new_session=True,  # own pgid: timeout-kill nukes whole tree
             text=True,
         )
@@ -96,19 +96,43 @@ class ShellSession:
     def alive(self) -> bool:
         return self.proc.poll() is None
 
-    def run(self, cmd: str, cwd: str, timeout: float, reset_cwd: bool = True):
-        """Execute cmd in the persistent shell. Returns result dict."""
+    def run(self, cmd: str, cwd: str, timeout: float, reset_cwd: bool = True,
+            perf_events: str = "", perf_out: str = ""):
+        """Execute cmd in the persistent shell. Returns result dict.
+
+        If perf_events is set, a `perf stat -p <session bash>` is attached for
+        the duration of the command (counting mode; children forked after
+        attach are inherited), writing a CSV to perf_out. This restores the
+        per-command PMU attribution that the fresh-process perf wrapper
+        provides in the stock configuration, at comparable overhead (one perf
+        process per command)."""
         with self.lock:
             rid = uuid.uuid4().hex[:12]
             out_f = os.path.join(self.ctl_dir, f"{rid}.out")
             err_f = os.path.join(self.ctl_dir, f"{rid}.err")
+            perf_proc = None
+            if perf_events and perf_out:
+                try:
+                    perf_proc = subprocess.Popen(
+                        ["perf", "stat", "-e", perf_events, "-x", ",",
+                         "-o", perf_out, "-p", str(self.proc.pid)],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    time.sleep(0.005)  # let the attach land before work starts
+                except (OSError, FileNotFoundError):
+                    perf_proc = None
             cpu0 = proc_cpu_seconds(self.proc.pid)
             t0 = time.time()
 
             # Brace group (NOT a subshell) so exports/cd/functions persist.
             # cd reset keeps stock-codex semantics: every call starts at the
             # tool-call cwd, exactly like a fresh process would.
-            prologue = f"cd {shq(cwd)} 2>/dev/null; " if reset_cwd else ""
+            # Reset shell options each command: mirrors stock fresh-process
+            # semantics. Codex's shell_snapshot validation runs `set -e` as a
+            # command; in a persistent session that would otherwise leak and
+            # kill the shell on the next ordinary failure.
+            prologue = "set +eu +o pipefail; "
+            if reset_cwd:
+                prologue += f"cd {shq(cwd)} 2>/dev/null; "
             # The brace group runs in the CURRENT shell (so exports/activation
             # persist). If the command calls `exit N`, that exits the persistent
             # bash itself — the EXIT trap still delivers N to the control fifo,
@@ -131,6 +155,12 @@ class ShellSession:
             status = self._wait_ctl(timeout)
             wall = time.time() - t0
             cpu = max(0.0, proc_cpu_seconds(self.proc.pid) - cpu0)
+            if perf_proc is not None:
+                try:
+                    perf_proc.send_signal(signal.SIGINT)
+                    perf_proc.wait(timeout=5)
+                except (subprocess.TimeoutExpired, OSError):
+                    perf_proc.kill()
 
             if status is None:  # timeout -> kill whole session group
                 try:
@@ -198,26 +228,84 @@ def read_trunc(path: str) -> str:
             pass
 
 
-# ---------------------------------------------------------------- spec cache
-def spec_cache_lookup(cache_dir: str, cmd: str, cwd: str):
-    """Speculation cache: results pre-computed by speculative_worker.py.
-    Entry is valid only if the workspace fingerprint recorded at speculation
-    time still matches (worker only caches read-only commands, but we
-    double-check)."""
-    if not cache_dir:
-        return None
-    key = hashlib.sha256(f"{cwd}\x00{cmd}".encode()).hexdigest()
-    p = Path(cache_dir) / f"{key}.json"
-    if not p.exists():
-        return None
+# ------------------------------------------------- spec cache: serve policy
+def _current_generation(cache_dir: str):
     try:
-        entry = json.loads(p.read_text())
-    except (OSError, json.JSONDecodeError):
+        return (Path(cache_dir) / "GENERATION").read_text().strip()
+    except OSError:
         return None
+
+
+def _spec_entry_invalid(cache_dir: str, entry: dict, cwd: str):
+    """Return None if servable, else a reason string.
+
+    Generation-stamped entries (edit_respec.py) validate against the
+    GENERATION file: O(1) read, sees in-place edits at any depth because the
+    watcher's deep scan owns detection. Legacy entries fall back to the
+    top-2-level fingerprint (blind below depth 2, oversensitive to top-level
+    churn -- kept only for compatibility with pre-edit worker entries)."""
+    gen = entry.get("generation")
+    if gen is not None:
+        cur = _current_generation(cache_dir)
+        if cur is None:
+            return "generation_file_missing"
+        return None if gen == cur else f"stale_generation({gen}!={cur})"
     fp = entry.get("workspace_fingerprint")
     if fp and fp != workspace_fingerprint(cwd):
-        return None  # workspace changed since speculation; stale
-    return entry
+        return "stale_fingerprint"
+    return None
+
+
+def _log_serve_decision(cache_dir: str, cmd: str, key, decision: str, entry):
+    try:
+        rec = {"ts": time.time(), "cmd": cmd[:300],
+               "key": ("exact" if key and not str(key).startswith("fam_")
+                       else key), "decision": decision}
+        if entry is not None:
+            rec["entry_cmd"] = entry.get("cmd", "")[:300]
+            rec["entry_exit"] = entry.get("exit")
+            rec["entry_gen"] = entry.get("generation")
+            rec["entry_age_s"] = round(
+                time.time() - entry.get("speculated_at", time.time()), 1)
+        with open(Path(cache_dir) / "serve_decisions.jsonl", "a") as f:
+            f.write(json.dumps(rec) + "\n")
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------- spec cache
+def spec_cache_lookup(cache_dir: str, cmd: str, cwd: str):
+    """Speculation cache lookup: exact string first, then semantic family key
+    (see speculation/spec_families.py). Entry is valid only if the workspace
+    fingerprint recorded at speculation time still matches."""
+    if not cache_dir:
+        return None
+    keys = [hashlib.sha256(f"{cwd}\x00{cmd}".encode()).hexdigest()]
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "speculation"))
+        from spec_families import family_key
+        fk = family_key(cmd)
+        if fk:
+            keys.append(f"fam_{fk}")
+    except ImportError:
+        pass
+    for key in keys:
+        p = Path(cache_dir) / f"{key}.json"
+        if not p.exists():
+            continue
+        try:
+            entry = json.loads(p.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        reason = _spec_entry_invalid(cache_dir, entry, cwd)
+        if reason:
+            _log_serve_decision(cache_dir, cmd, key, reason, entry)
+            continue
+        _log_serve_decision(cache_dir, cmd, key, "served", entry)
+        return entry
+    if len(keys) > 1:  # a family key existed => speculation-relevant miss
+        _log_serve_decision(cache_dir, cmd, None, "no_entry", None)
+    return None
 
 
 FP_EXCLUDE = {".git", "__pycache__", ".pytest_cache", ".tox", ".mypy_cache",
@@ -247,6 +335,46 @@ def workspace_fingerprint(cwd: str) -> str:
     return f"{latest}:{count}"
 
 
+
+def spec_near_miss(cache_dir: str, cmd: str, cwd: str):
+    """After a serve-miss, score how CLOSE speculation got. Returns
+    {score, matched_entry_cmd} or None. Never serves — feeds telemetry (and,
+    later, the EV gate/ledger). Score: Jaccard over comparable target units,
+    file-level credit for `file::test` vs `file` (0.8), family-only overlap
+    floor (0.2). The near-missed command still executes for real — in the
+    speculation-WARMED persistent session, which is where the residual saving
+    lives (imports compiled, caches hot)."""
+    if not cache_dir:
+        return None
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "speculation"))
+        from spec_families import parse_command
+    except ImportError:
+        return None
+    q = parse_command(cmd)
+    if q is None or not q["targets"]:
+        return None
+    q_files = {t.split("::")[0] for t in q["targets"]}
+    best = None
+    for pth in Path(cache_dir).glob("fam_*.json"):
+        try:
+            entry = json.loads(pth.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        e = parse_command(entry.get("cmd", ""))
+        if e is None or e["family"] != q["family"]:
+            continue
+        et, qt = set(e["targets"]), set(q["targets"])
+        if et & qt:
+            score = len(et & qt) / len(et | qt)
+        else:
+            e_files = {tt.split("::")[0] for tt in e["targets"]}
+            score = 0.8 if (e_files & q_files) else 0.2
+        if best is None or score > best["score"]:
+            best = {"score": round(score, 3), "matched_entry_cmd": entry.get("cmd")}
+    return best if best and best["score"] > 0 else None
+
+
 # ------------------------------------------------------------------- server
 class Daemon:
     def __init__(self, args):
@@ -257,6 +385,10 @@ class Daemon:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.jsonl = open(self.log_dir / "commands.jsonl", "a", buffering=1)
         self.stats = {"commands": 0, "sessions_created": 0, "cache_hits": 0}
+        self.perf_seq = 0
+        self.perf_dir = self.log_dir / "tool_perf"
+        if args.perf_events:
+            self.perf_dir.mkdir(parents=True, exist_ok=True)
 
     def log(self, msg):
         print(f"[shelld {time.strftime('%H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
@@ -298,15 +430,29 @@ class Daemon:
             self._record(cmd, cwd, res)
             return res
 
+        near = spec_near_miss(self.args.spec_cache, cmd, cwd)
+        if near:
+            self.stats["near_misses"] = self.stats.get("near_misses", 0) + 1
+
         session, reused = self.get_session(key, bool(req.get("fresh")))
+        perf_out = ""
+        if self.args.perf_events:
+            self.perf_seq += 1
+            perf_out = str(self.perf_dir / f"cmd_{self.perf_seq:04d}.csv")
         res = session.run(cmd, cwd, timeout,
-                          reset_cwd=not self.args.persist_cwd)
+                          reset_cwd=not self.args.persist_cwd,
+                          perf_events=self.args.perf_events,
+                          perf_out=perf_out)
+        if perf_out and os.path.exists(perf_out):
+            res["perf_csv"] = perf_out
         if res.pop("session_dead", False):
             with self.sessions_lock:
                 if self.sessions.get(key) is session:
                     del self.sessions[key]
         res["cached"] = False
         res["session_reused"] = reused
+        if near:
+            res["near_miss"] = near
         self.stats["commands"] += 1
         self._record(cmd, cwd, res)
         return res
@@ -317,6 +463,8 @@ class Daemon:
             "exit": res["exit"], "wall_s": res.get("wall_s"),
             "cpu_s": res.get("cpu_s"), "cached": res["cached"],
             "session_reused": res["session_reused"],
+            "perf_csv": res.get("perf_csv"),
+            "near_miss": res.get("near_miss"),
         }) + "\n")
 
     def _shutdown(self):
@@ -324,6 +472,10 @@ class Daemon:
         with self.sessions_lock:
             for s in self.sessions.values():
                 s.close()
+        try:
+            os.unlink(self.args.socket)
+        except OSError:
+            pass
         os._exit(0)
 
 
@@ -333,6 +485,8 @@ def main():
     ap.add_argument("--log-dir", default=os.environ.get("SESSIOND_LOG_DIR", "/tmp/shelld_logs"))
     ap.add_argument("--spec-cache", default=os.environ.get("SESSIOND_SPEC_CACHE", ""))
     ap.add_argument("--default-timeout", type=float, default=3600)
+    ap.add_argument("--perf-events", default=os.environ.get("SESSIOND_PERF_EVENTS", ""),
+                    help="if set, attach 'perf stat -p <session>' per command, CSVs to <log-dir>/tool_perf/")
     ap.add_argument("--no-login", action="store_true",
                     help="skip -l on session creation (faster, no profile)")
     ap.add_argument("--persist-cwd", action="store_true",

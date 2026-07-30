@@ -82,6 +82,22 @@ def cache_key(cwd: str, cmd: str) -> str:
     return hashlib.sha256(f"{cwd}\x00{cmd}".encode()).hexdigest()
 
 
+def cache_put_family(cache_dir: Path, cwd: str, cmd: str, proc, fingerprint: str):
+    """Store under the semantic family key so ANY equivalent phrasing hits."""
+    from spec_families import family_key
+    fk = family_key(cmd)
+    if fk is None:
+        return False
+    entry = {
+        "cmd": cmd, "cwd": cwd, "exit": proc.returncode,
+        "stdout": proc.stdout[-512 * 1024:], "stderr": proc.stderr[-64 * 1024:],
+        "workspace_fingerprint": fingerprint, "speculated_at": time.time(),
+        "family": True,
+    }
+    (cache_dir / f"fam_{fk}.json").write_text(json.dumps(entry))
+    return True
+
+
 def cache_put(cache_dir: Path, cwd: str, cmd: str, proc, fingerprint: str):
     entry = {
         "cmd": cmd, "cwd": cwd,
@@ -147,6 +163,123 @@ def act_cargo_fetch(ws, ctx):
     return [("cargo fetch", False)]
 
 
+# ------------------------------------------------------- targeted pytest
+def discover_pytest_targets(ws: Path, problem_statement: str, limit: int = 4):
+    """Heuristic (non-oracle) target prediction: pull python paths/modules
+    mentioned in the problem statement, map to existing test files by the
+    tests/test_<name>.py convention. This is what an agent does mentally in
+    its first turn; we do it statically for free."""
+    import re
+    candidates = []
+    seen = set()
+    # explicit paths in the statement
+    for m in re.finditer(r"[\w/\.]+\.py", problem_statement):
+        candidates.append(m.group(0).lstrip("/"))
+    # module dotted names -> paths
+    for m in re.finditer(r"\b([a-z_]+(?:\.[a-z_]+){1,5})\b", problem_statement):
+        candidates.append(m.group(1).replace(".", "/") + ".py")
+    targets = []
+    for c in candidates:
+        src = ws / c
+        if not src.exists():
+            continue
+        name = src.stem
+        for t in (src.parent / "tests" / f"test_{name}.py",
+                  src.parent.parent / "tests" / f"test_{name}.py",
+                  ws / "tests" / f"test_{name}.py"):
+            if t.exists():
+                rel = str(t.relative_to(ws))
+                if rel not in seen:
+                    seen.add(rel)
+                    targets.append(rel)
+    return targets[:limit]
+
+
+def act_pytest_targeted(ws, ctx):
+    """Pre-run the test files the agent will most likely run first, caching
+    under FAMILY keys so any phrasing of the same invocation hits.
+
+    Granularity: file-level runs first (cheapest, most likely query), then
+    individual test ids collected from those files (fixes the `file::test`
+    single-test query miss). Each in the two flag profiles agents use."""
+    targets = ctx.get("pytest_targets") or []
+    if not targets and ctx.get("problem_statement"):
+        targets = discover_pytest_targets(ws, ctx["problem_statement"])
+        print(f"[spec] heuristic pytest targets: {targets}")
+    cmds = []
+    for t in targets:
+        cmds.append((f"python -m pytest {t}", "family"))
+        cmds.append((f"python -m pytest {t} -q", "family"))
+    # collect test ids from predicted files -> per-test pre-runs
+    max_ids = int(os.environ.get("SPEC_MAX_TEST_IDS", "20"))
+    ids = []
+    for t in targets:
+        try:
+            proc = subprocess.run(
+                ["bash", "-c", f"python -m pytest {t} --collect-only -q"],
+                cwd=ws, capture_output=True, text=True, timeout=120)
+            for line in proc.stdout.splitlines():
+                line = line.strip()
+                if "::" in line and not line.startswith(("=", "warning")):
+                    ids.append(line.split()[0])
+        except subprocess.TimeoutExpired:
+            pass
+    for tid in ids[:max_ids]:
+        cmds.append((f"python -m pytest {tid}", "family"))
+        cmds.append((f"python -m pytest {tid} -q", "family"))
+    if ids:
+        print(f"[spec] collected {len(ids)} test ids, pre-running {min(len(ids), max_ids)}")
+    return cmds
+
+
+def discover_django_labels(ws: Path, problem_statement: str, limit: int = 4):
+    """Django tests are addressed by label = directory name under tests/
+    (e.g. dbshell), optionally label.test_module. Map problem-statement
+    mentions to existing test dirs."""
+    import re
+    tests_dir = ws / "tests"
+    if not (tests_dir / "runtests.py").exists():
+        return []
+    existing = {d.name for d in tests_dir.iterdir() if d.is_dir()}
+    labels, seen = [], set()
+    words = set(re.findall(r"[a-z_][a-z0-9_]{2,}", problem_statement.lower()))
+    # direct mentions of a test dir name
+    for w in words:
+        if w in existing and w not in seen:
+            seen.add(w)
+            labels.append(w)
+    # module paths like django/db/backends/postgresql/client.py -> backends
+    for m in re.finditer(r"django/[\w/]+\.py", problem_statement):
+        for part in m.group(0).split("/"):
+            p = part.removesuffix(".py")
+            if p in existing and p not in seen:
+                seen.add(p)
+                labels.append(p)
+    return labels[:limit]
+
+
+def act_django_targeted(ws, ctx):
+    """django-runner analogue of pytest_targeted: pre-run predicted labels
+    at the verbosity profiles agents use, plus per-module labels."""
+    labels = ctx.get("django_labels") or []
+    if not labels and ctx.get("problem_statement"):
+        labels = discover_django_labels(ws, ctx["problem_statement"])
+        print(f"[spec] heuristic django labels: {labels}")
+    cmds = []
+    for lab in labels:
+        for v in ("1", "2"):
+            suffix = "" if v == "1" else f" --verbosity {v}"
+            cmds.append((f"python tests/runtests.py {lab}{suffix}", "family"))
+        # per-module sub-labels (label.test_x) for finer-grained queries
+        d = ws / "tests" / lab
+        subs = sorted(p.stem for p in d.glob("test_*.py"))[:5] if d.is_dir() else []
+        for s in subs:
+            for v in ("1", "2"):
+                suffix = "" if v == "1" else f" --verbosity {v}"
+                cmds.append((f"python tests/runtests.py {lab}.{s}{suffix}", "family"))
+    return cmds
+
+
 ACTIONS = {
     "git_status": act_git_status,
     "repo_index": act_repo_index,
@@ -155,6 +288,8 @@ ACTIONS = {
     "py_dep_preinstall": act_py_dep_preinstall,
     "npm_ci_prefetch": act_npm_ci_prefetch,
     "cargo_fetch": act_cargo_fetch,
+    "pytest_targeted": act_pytest_targeted,
+    "django_targeted": act_django_targeted,
 }
 
 
@@ -170,6 +305,14 @@ def main():
     ap.add_argument("--nice", type=int, default=10,
                     help="niceness so speculation never competes with the agent")
     ap.add_argument("--timeout-per-cmd", type=float, default=600)
+    ap.add_argument("--problem-statement", default=None,
+                    help="file with the task text; enables heuristic pytest target discovery")
+    ap.add_argument("--pytest-targets", default=None,
+                    help="comma list of test paths (oracle mode / explicit hints)")
+    ap.add_argument("--predictor", default="heuristic",
+                    choices=["heuristic", "llm", "both", "gate"],
+                    help="'gate' lets spec_gate's ledger-informed EV decision choose")
+    ap.add_argument("--ledger-dir", default=None)
     args = ap.parse_args()
 
     ws = Path(args.workspace).resolve()
@@ -178,16 +321,70 @@ def main():
     scratch = Path(args.scratch) if args.scratch else cache_dir / "scratch"
     scratch.mkdir(parents=True, exist_ok=True)
     ctx = {"scratch": scratch}
+    if args.pytest_targets:
+        ctx["pytest_targets"] = args.pytest_targets.split(",")
+    if args.problem_statement and Path(args.problem_statement).exists():
+        ctx["problem_statement"] = Path(args.problem_statement).read_text()
 
+    use_llm = args.predictor in ("llm", "both")
     if args.actions:
         plan = args.actions.split(",")
     else:
-        d = should_speculate(args.benchmark, str(ws))
+        d = should_speculate(args.benchmark, str(ws),
+                             task_text=ctx.get("problem_statement", ""),
+                             ledger_dir=args.ledger_dir)
         if not d.speculate:
             print(f"[spec] gate says no: {d.reason}")
             return
         plan = d.actions
         print(f"[spec] gate: {d.reason} -> {plan} (conf {d.confidence})")
+        if args.predictor == "gate":
+            use_llm = getattr(d, "use_llm", False)
+            print(f"[spec] gate LLM decision: use_llm={use_llm} ({getattr(d, 'llm_reason', '')})")
+        if not getattr(d, "per_test_ids", True):
+            os.environ.setdefault("SPEC_MAX_TEST_IDS", "0")
+            print("[spec] gate: file-level granularity only (prediction confidence low)")
+
+    # ---- LLM predictor (build 4): merge its commands into the target hints
+    if use_llm and ctx.get("problem_statement"):
+        from llm_predictor import predict_meta
+        llm_cmds, meta = predict_meta(ws, ctx["problem_statement"])
+        print(f"[spec] llm predictor: {llm_cmds} tokens={meta.get('tokens')} "
+              f"latency={meta.get('latency_s')}s")
+        if args.ledger_dir:
+            from ledger import record_prediction
+            record_prediction(args.ledger_dir, ws.name, args.benchmark, "llm",
+                              llm_cmds, meta.get("tokens"), meta.get("latency_s"))
+        from spec_families import parse_command
+        for c in llm_cmds:
+            pc = parse_command(c)
+            if not pc:
+                continue
+            if pc["family"] == "pytest":
+                ctx.setdefault("pytest_targets", [])
+                ctx["pytest_targets"] += [t for t in pc["targets"]
+                                          if t not in ctx["pytest_targets"]]
+                if "pytest_targeted" not in plan:
+                    plan.append("pytest_targeted")
+            elif pc["family"] == "django":
+                ctx.setdefault("django_labels", [])
+                ctx["django_labels"] += [t.split(".")[0] for t in pc["targets"]
+                                         if t.split(".")[0] not in ctx["django_labels"]]
+                if "django_targeted" not in plan:
+                    plan.append("django_targeted")
+
+    # ledger: record what the HEURISTIC would predict (even in llm mode),
+    # so heuristic vs llm accuracy accumulate side by side per task.
+    if args.ledger_dir and ctx.get("problem_statement"):
+        heur = []
+        if (ws / "tests" / "runtests.py").exists():
+            heur = [f"python tests/runtests.py {l}"
+                    for l in discover_django_labels(ws, ctx["problem_statement"])]
+        else:
+            heur = [f"python -m pytest {t}"
+                    for t in discover_pytest_targets(ws, ctx["problem_statement"])]
+        from ledger import record_prediction
+        record_prediction(args.ledger_dir, ws.name, args.benchmark, "heuristic", heur)
 
     os.nice(args.nice)  # stay out of the agent's way
     n_cached = 0
@@ -206,7 +403,14 @@ def main():
                 print(f"[spec] TIMEOUT {cmd!r}")
                 continue
             dt = time.time() - t0
-            if cacheable:
+            if cacheable == "family":
+                if cache_put_family(cache_dir, str(ws), cmd,
+                                    proc, workspace_fingerprint(str(ws))):
+                    n_cached += 1
+                    print(f"[spec] cached* ({dt:5.1f}s, exit {proc.returncode}) {cmd}  [family key]")
+                else:
+                    print(f"[spec] skip (unnormalizable) {cmd}")
+            elif cacheable:
                 # Fingerprint is taken AFTER the command (the state the agent
                 # will see). If the agent later edits files, the entry simply
                 # won't validate and the command runs for real. Safe by design.

@@ -40,6 +40,10 @@ esac
 CMD="$3"
 
 # ---- 1. ensure daemon is up (once; flock prevents races) -------------------
+# stale socket file (daemon gone) must not block a restart
+if [[ -S "$SOCK" ]] && ! python3 -c "import socket,sys;s=socket.socket(socket.AF_UNIX);s.settimeout(2);s.connect(sys.argv[1])" "$SOCK" 2>/dev/null; then
+  rm -f "$SOCK"
+fi
 if [[ ! -S "$SOCK" ]]; then
   mkdir -p "$(dirname "$SOCK")" "$LOGDIR"
   (
