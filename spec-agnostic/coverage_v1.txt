@@ -1,0 +1,67 @@
+corpus: 1248 commands, 1,442.9s logged wall
+tiers module: /scratch/czhai/spec_tiers.v1.py
+
+simple commands           625  servable     75  ( 12.0%)
+compound commands         623
+  fully servable           82  ( 13.2%)
+  leading-prefix only      93  ( 14.9%)
+  nothing servable        448  ( 71.9%)
+  structurally refused    283  (heredoc/||/& — counted as simple)
+  leading parts served 378/1658 ( 22.8%)
+
+ANY servable surface      250/1248  ( 20.0%) of commands
+seconds coverage       236.6s/1,442.9s ( 16.4%) of tool wall (prefix pro-rata)
+
+top refused heads (simple commands) — cmds / secs:
+  if                         182        14.3s
+  python                      78       292.6s
+  find                        37        50.3s
+  git                         37        43.1s
+  grep                        36        27.5s
+  sed                         33         5.8s
+  rg                          30         0.5s
+  ls                          23         2.1s
+  PYTHONPATH=.                18         7.7s
+  verify.sh                   11         0.4s
+  python3                     11         4.4s
+  command                      8       318.9s
+  PYTHONWARNINGS=ignore        5         4.7s
+  pwd                          4         0.9s
+  PYTHONWARNINGS=ignore::Depreca     3         1.4s
+  cd                           3         0.0s
+  astropy-14369-numpy          3         4.6s
+  env                          2         0.0s
+  which                        2         0.5s
+  head                         2         3.1s
+  tar                          2         0.0s
+  ps                           2         0.1s
+  diff                         2         2.4s
+  PYTHONWARNINGS='ignore::Deprec     1         0.6s
+  mv                           1         0.5s
+
+top refused heads (compound parts):
+  sed                        282
+  set                        182
+  .                          182
+  git                         89
+  grep                        88
+  rg                          68
+  find                        38
+  python                      33
+  test                        23
+  verify.sh                   15
+  printf                       8
+  python3                      7
+  tar                          7
+  time                         4
+  ls                           4
+  od                           4
+  rm                           3
+  curl                         3
+  bash                         3
+  if                           2
+  then                         2
+  else                         2
+  fi                           2
+  gzip                         2
+  awk                          2

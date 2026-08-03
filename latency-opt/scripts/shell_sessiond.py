@@ -350,8 +350,35 @@ def _prefix_try_serve(cache_dir: str, cmd: str, cwd: str):
             "n": n, "total": total, "saved_s": saved}
 
 
+# ------------------------------------------------- spec cache: in-flight join
+def _join_inflight(cache_dir: str, key: str) -> float:
+    """If a speculator is executing this exact key right now (fresh
+    {key}.inflight marker), wait bounded time for its entry. Returns seconds
+    waited; caller re-checks entry existence and validates as usual."""
+    m = Path(cache_dir) / f"{key}.inflight"
+    p = Path(cache_dir) / f"{key}.json"
+    try:
+        info = json.loads(m.read_text())
+    except (OSError, json.JSONDecodeError):
+        return 0.0
+    max_age = float(os.environ.get("SPEC_JOIN_MAX_AGE", "300"))
+    if time.time() - float(info.get("ts", 0)) > max_age:
+        return 0.0                       # crashed/abandoned writer: ignore
+    wait_max = float(os.environ.get("SPEC_JOIN_MAX_WAIT", "8"))
+    t0 = time.time()
+    while time.time() - t0 < wait_max:
+        if p.exists():
+            break
+        if not m.exists():               # writer finished or died; brief grace
+            time.sleep(0.05)             # for entry-write racing marker removal
+            break
+        time.sleep(0.05)
+    return time.time() - t0
+
+
 # ---------------------------------------------------------------- spec cache
-def spec_cache_lookup(cache_dir: str, cmd: str, cwd: str, log: bool = True):
+def spec_cache_lookup(cache_dir: str, cmd: str, cwd: str, log: bool = True,
+                      wait_inflight: bool = False):
     """Speculation cache lookup: exact string first, then semantic family key
     (see speculation/spec_families.py). Entry is valid only if the workspace
     fingerprint recorded at speculation time still matches."""
@@ -366,13 +393,24 @@ def spec_cache_lookup(cache_dir: str, cmd: str, cwd: str, log: bool = True):
             keys.append(f"fam_{fk}")
     except ImportError:
         pass
+    waited = 0.0
     for key in keys:
         p = Path(cache_dir) / f"{key}.json"
+        if not p.exists() and wait_inflight and key == keys[0]:
+            waited = _join_inflight(cache_dir, key)
+            if waited and not p.exists() and log:
+                _log_serve_decision(cache_dir, cmd, key,
+                                    f"inflight_timeout({waited:.2f}s)", None)
         if not p.exists():
             continue
-        try:
-            entry = json.loads(p.read_text())
-        except (OSError, json.JSONDecodeError):
+        entry = None
+        for _attempt in (0, 1):          # writer may be mid-write post-join
+            try:
+                entry = json.loads(p.read_text())
+                break
+            except (OSError, json.JSONDecodeError):
+                time.sleep(0.05)
+        if entry is None:
             continue
         reason = _spec_entry_invalid(cache_dir, entry, cwd)
         if reason:
@@ -380,6 +418,9 @@ def spec_cache_lookup(cache_dir: str, cmd: str, cwd: str, log: bool = True):
                 _log_serve_decision(cache_dir, cmd, key, reason, entry)
             continue
         if log:
+            if waited and key == keys[0]:
+                _log_serve_decision(cache_dir, cmd, key,
+                                    f"joined_inflight({waited:.2f}s)", entry)
             _log_serve_decision(cache_dir, cmd, key, "served", entry)
         return entry
     if log and (len(keys) > 1 or "pytest" in cmd or "runtests.py" in cmd):
@@ -499,7 +540,8 @@ class Daemon:
         timeout = float(req.get("timeout", self.args.default_timeout))
 
         # speculation cache first
-        hit = spec_cache_lookup(self.args.spec_cache, cmd, cwd)
+        hit = spec_cache_lookup(self.args.spec_cache, cmd, cwd,
+                                wait_inflight=True)
         if hit is not None:
             self.stats["cache_hits"] += 1
             self.stats["commands"] += 1

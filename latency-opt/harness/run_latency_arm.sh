@@ -28,6 +28,8 @@ WS_ROOT=${WS_ROOT:-/scratch/czhai/latency-eval/workspaces}
 TB_TASKS_DIR=${TB_TASKS_DIR:-$ROOT/runs/terminalbench}
 HOTPOT_MANIFEST=${HOTPOT_MANIFEST:-$(ls $ROOT/manifests/hotpotqa*.tsv 2>/dev/null | head -1)}
 CODEX_BIN=${CODEX_BIN:-${CODEX_SRC_BIN:-codex}}
+# gate + predictor LLM calls use the same binary as the agent by default
+export SPEC_LLM_BIN=${SPEC_LLM_BIN:-$CODEX_BIN}
 PERF_EVENTS=${PERF_EVENTS:-task-clock,context-switches,page-faults}
 RESULTS=${RESULTS:-/scratch/czhai/latency-eval/results/arm_$ARM.$(date +%Y%m%d_%H%M%S)}
 
@@ -84,7 +86,8 @@ run_one() {  # $1 bench, $2 task_id
       ;;
     terminalbench)
       workdir=""
-      for cand in "$TB_TASKS_DIR/$tid/base_task" "$TB_TASKS_DIR/$tid"; do
+      for cand in "$TB_TASKS_DIR/$tid/base_task" "$TB_TASKS_DIR/$tid" \
+                  "$ROOT/runs/terminalbench-arm/$tid/base_task"; do
         [[ -d "$cand" ]] && workdir=$cand && break
       done
       [[ -z "$workdir" ]] && { echo "  SKIP: task dir missing for $tid"; return; }
@@ -94,13 +97,19 @@ run_one() {  # $1 bench, $2 task_id
       fi
       local pfile=""
       for cand in "$TB_TASKS_DIR/$tid/prompt.txt" "$TB_TASKS_DIR/$tid/task.txt" \
-                  "$workdir/prompt.txt" "$workdir/task.txt" "$workdir/instruction.txt"; do
+                  "$workdir/prompt.txt" "$workdir/task.txt" "$workdir/instruction.txt" \
+                  "$ROOT/prompts/tb_$tid.txt"; do
         [[ -f "$cand" ]] && pfile=$cand && break
       done
       [[ -z "$pfile" ]] && { echo "  SKIP: no prompt file for $tid (looked for prompt.txt/task.txt)"; return; }
       prompt=$(cat "$pfile")
       ;;
   esac
+
+  # canonicalize: cache keys are sha256(cwd+cmd); a symlinked logical cwd
+  # on the agent side vs a resolved path on the speculation side misses
+  # every lookup by construction (observed on runs/terminalbench-arm).
+  [[ -n "$workdir" ]] && workdir=$(realpath "$workdir")
 
   # ---- arm-specific env ------------------------------------------------------
   local sock="/tmp/czhai_shelld/$ARM.$bench.$tid/sock" spec_pid=""
@@ -112,11 +121,24 @@ run_one() {  # $1 bench, $2 task_id
     fi
     if [[ $ARM == C && ( $bench == swebench || $bench == terminalbench ) ]]; then
       export CODEX_SHELLD_SPEC=$run_dir/spec_cache
+      mkdir -p "$CODEX_SHELLD_SPEC"
       printf '%s' "$prompt" > "$run_dir/problem.txt"
+      # T=0 ungated worker: recon everywhere; on TB also the LLM predictor in
+      # DIRECT-ONLY mode (tier0 reads; family/heavy predictions stay gated).
+      # Two measured lost races showed the gate call is high-variance and
+      # short-task speculation cannot sit behind it.
+      EARLY_XTRA=""
+      [[ $bench == terminalbench ]] && \
+        EARLY_XTRA="--predictor llm --problem-statement $run_dir/problem.txt --timeout-per-cmd 20"
+      SPEC_DIRECT_ONLY=1 nohup python3 -u "$OPT/speculation/speculative_worker.py" \
+        --workspace "$workdir" --cache-dir "$CODEX_SHELLD_SPEC" --benchmark "$bench" \
+        --actions workspace_recon $EARLY_XTRA --nice 10 \
+        > "$run_dir/spec_early.log" 2>&1 &
+      echo $! > "$run_dir/spec_early.pid"
       PS_ARG="--problem-statement $run_dir/problem.txt"
       [[ $bench == swebench && -f $ROOT/prompts/swe_$tid.txt ]] && PS_ARG="--problem-statement $ROOT/prompts/swe_$tid.txt"
-      GATE_XTRA=""
-      [[ $bench == swebench ]] && GATE_XTRA="--statement-only"
+      GATE_XTRA="--statement-only"
+      [[ "${SPEC_GATE_STREAM:-0}" == "1" ]] && GATE_XTRA=""
       nohup python3 -u "$OPT/speculation/llm_gate.py" \
         --problem-statement "$run_dir/problem.txt" \
         --agent-stream "$run_dir/stdout.jsonl" \
@@ -124,7 +146,8 @@ run_one() {  # $1 bench, $2 task_id
         --gate-json "$run_dir/gate.json" --timeout 90 $GATE_XTRA \
         -- python3 "$OPT/speculation/speculative_worker.py" \
           --workspace "$workdir" --cache-dir "$CODEX_SHELLD_SPEC" --benchmark "$bench" \
-          --predictor both --ledger-dir "$ROOT/latency-opt/ledger" \
+          --predictor $([[ $bench == terminalbench ]] && echo heuristic || echo both) \
+          --ledger-dir "$ROOT/latency-opt/ledger" \
           $PS_ARG > "$run_dir/spec.log" 2>&1 &
       echo $! > "$run_dir/spec.pid"
       nohup python3 -u "$OPT/speculation/edit_respec.py" \
@@ -147,6 +170,7 @@ run_one() {  # $1 bench, $2 task_id
   )
 
   # ---- teardown --------------------------------------------------------------
+  [[ -f "$run_dir/spec_early.pid" ]] && kill "$(cat "$run_dir/spec_early.pid")" 2>/dev/null
   [[ -f "$run_dir/spec.pid" ]] && kill "$(cat "$run_dir/spec.pid")" 2>/dev/null
   [[ -f "$run_dir/respec.pid" ]] && kill "$(cat "$run_dir/respec.pid")" 2>/dev/null
   [[ $ARM == B || $ARM == C ]] && shelld_shutdown "$sock" >> "$run_dir/daemon_stats.txt"

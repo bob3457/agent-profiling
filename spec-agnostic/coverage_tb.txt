@@ -1,0 +1,55 @@
+corpus: 353 commands, 352.2s logged wall
+tiers module: /projects/kzhou6/czhai/agent-profiling/latency-opt/speculation/spec_tiers.py
+
+simple commands           171  servable     12  (  7.0%)
+compound commands         182
+  fully servable           53  ( 29.1%)
+  leading-prefix only      20  ( 11.0%)
+  nothing servable        109  ( 59.9%)
+  structurally refused    110  (heredoc/||/& — counted as simple)
+  leading parts served 179/491 ( 36.5%)
+
+ANY servable surface       85/353  ( 24.1%) of commands
+seconds coverage       2.0s/352.2s (  0.6%) of tool wall (prefix pro-rata)
+
+top refused heads (simple commands) — cmds / secs:
+  if                          63         4.9s
+  python                      26        53.8s
+  ls                          16         1.0s
+  verify.sh                   11         0.4s
+  python3                     10         4.2s
+  find                         8         0.2s
+  git                          7         0.7s
+  pwd                          4         0.9s
+  sed                          4         2.4s
+  rg                           2         0.3s
+  tar                          2         0.0s
+  ps                           2         0.1s
+  bash                         1         0.1s
+  rm                           1         0.0s
+  command                      1       269.4s
+  tmp_dir=$(mktemp             1         2.1s
+
+top refused heads (compound parts):
+  set                         63
+  .                           63
+  python                      26
+  git                         20
+  test                        16
+  verify.sh                   15
+  python3                      7
+  tar                          5
+  time                         4
+  find                         4
+  bash                         3
+  sed                          3
+  output=$(python              2
+  status=$?                    2
+  SOURCE_DATE_EPOCH=0          1
+  cmp                          1
+  rg                           1
+  awk                          1
+  gzip                         1
+  sha256sum                    1
+  exit                         1
+  output=$(python3             1

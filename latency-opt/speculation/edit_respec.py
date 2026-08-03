@@ -431,7 +431,16 @@ def main():
     traj = Trajectory(args.commands_log, args.agent_stream, ws)
     done_at_gen = set()   # (gen, cmd) already cached
 
+    def _inflight_path(cmd):
+        k = hashlib.sha256(f"{ws}\x00{cmd}".encode()).hexdigest()
+        return cache_dir / f"{k}.inflight"
+
     def _spawn(cmd):
+        try:
+            _inflight_path(cmd).write_text(json.dumps(
+                {"ts": time.time(), "pid": os.getpid(), "cmd": cmd[:200]}))
+        except OSError:
+            pass
         pr = subprocess.Popen(["bash", "-lc", cmd], cwd=ws, text=True,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                               preexec_fn=lambda: os.nice(10))
@@ -445,11 +454,19 @@ def main():
         dur = time.time() - pr._t0
         if read_generation(cache_dir) != gen:
             _log(f"gen {gen}: raced by newer edit, discarding {pr._cmd!r}")
+            try:
+                _inflight_path(pr._cmd).unlink()
+            except OSError:
+                pass
             return False
         keys = store_entry(cache_dir, ws,  pr._cmd,
                            subprocess.CompletedProcess(pr._cmd, pr.returncode,
                                                        out, err), dur, gen)
         done_at_gen.add((gen, pr._cmd))
+        try:
+            _inflight_path(pr._cmd).unlink()   # entry already on disk
+        except OSError:
+            pass
         _ledger_tier1(pr._cmd, gen)
         _log(f"gen {gen}: cached exit={pr.returncode} {dur:.2f}s "
              f"{pr._cmd!r} keys={[k[:12] for k in keys]}")

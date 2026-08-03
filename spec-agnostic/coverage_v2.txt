@@ -1,0 +1,67 @@
+corpus: 1248 commands, 1,442.9s logged wall
+tiers module: /projects/kzhou6/czhai/agent-profiling/latency-opt/speculation/spec_tiers.py
+
+simple commands           625  servable     94  ( 15.0%)
+compound commands         623
+  fully servable          189  ( 30.3%)
+  leading-prefix only     114  ( 18.3%)
+  nothing servable        320  ( 51.4%)
+  structurally refused    283  (heredoc/||/& — counted as simple)
+  leading parts served 714/1658 ( 43.1%)
+
+ANY servable surface      397/1248  ( 31.8%) of commands
+seconds coverage       278.6s/1,442.9s ( 19.3%) of tool wall (prefix pro-rata)
+
+top refused heads (simple commands) — cmds / secs:
+  if                         182        14.3s
+  python                      78       292.6s
+  find                        37        50.3s
+  git                         37        43.1s
+  grep                        33        26.9s
+  rg                          26         0.5s
+  ls                          23         2.1s
+  sed                         22         5.7s
+  PYTHONPATH=.                18         7.7s
+  verify.sh                   11         0.4s
+  python3                     11         4.4s
+  command                      8       318.9s
+  PYTHONWARNINGS=ignore        5         4.7s
+  pwd                          4         0.9s
+  PYTHONWARNINGS=ignore::Depreca     3         1.4s
+  cd                           3         0.0s
+  astropy-14369-numpy          3         4.6s
+  env                          2         0.0s
+  which                        2         0.5s
+  head                         2         3.1s
+  tar                          2         0.0s
+  ps                           2         0.1s
+  diff                         2         2.4s
+  PYTHONWARNINGS='ignore::Deprec     1         0.6s
+  mv                           1         0.5s
+
+top refused heads (compound parts):
+  set                        182
+  .                          182
+  grep                        82
+  git                         82
+  rg                          60
+  find                        38
+  python                      32
+  test                        16
+  verify.sh                   15
+  python3                      7
+  tar                          5
+  sed                          5
+  time                         4
+  ls                           4
+  rm                           3
+  curl                         3
+  bash                         3
+  if                           2
+  then                         2
+  else                         2
+  fi                           2
+  PYTHONPATH="$PWD"            2
+  django__django-11087         2
+  output=$(python              2
+  status=$?                    2

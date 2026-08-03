@@ -112,6 +112,22 @@ def cache_put(cache_dir: Path, cwd: str, cmd: str, proc, fingerprint: str):
     (cache_dir / f"{cache_key(cwd, cmd)}.json").write_text(json.dumps(entry))
 
 
+# ------------------------------------------------------------ in-flight marks
+def _mark_inflight(cache_dir: Path, key: str, cmd: str):
+    try:
+        (cache_dir / f"{key}.inflight").write_text(
+            json.dumps({"ts": time.time(), "pid": os.getpid(), "cmd": cmd[:200]}))
+    except OSError:
+        pass
+
+
+def _clear_inflight(cache_dir: Path, key: str):
+    try:
+        (cache_dir / f"{key}.inflight").unlink()
+    except OSError:
+        pass
+
+
 # ------------------------------------------------------------------- actions
 # Each action returns a list of (exact_command_string, is_cacheable) it ran.
 # exact_command_string matters: cache hits require the agent to issue the
@@ -282,6 +298,79 @@ def act_django_targeted(ws, ctx):
     return cmds
 
 
+
+# ---------------------------------------------------- task-agnostic actions
+RECON_MAX_FILES = int(os.environ.get("SPEC_RECON_MAX_FILES", "15"))
+RECON_MAX_BYTES = int(os.environ.get("SPEC_RECON_MAX_BYTES", str(32 * 1024)))
+
+
+def _is_texty(p: Path) -> bool:
+    try:
+        return b"\0" not in p.open("rb").read(1024)
+    except OSError:
+        return False
+
+
+def act_workspace_recon(ws, ctx):
+    """Universal first moves: what every agent does on every filesystem task,
+    regardless of domain. All TIER0 by construction."""
+    cmds = ["ls", "ls -la", "pwd",
+            "find . -type f -not -path '*/.git/*' | head -100"]
+    n = 0
+    for p in sorted(ws.iterdir()):
+        if p.name.startswith(".") or p.name in ("__pycache__", "node_modules"):
+            continue
+        if p.is_dir():
+            cmds.append(f"ls {p.name}")
+            cmds.append(f"ls -la {p.name}")
+        elif p.is_file() and n < RECON_MAX_FILES:
+            try:
+                size = p.stat().st_size
+            except OSError:
+                continue
+            if 0 < size <= RECON_MAX_BYTES and _is_texty(p):
+                cmds.append(f"cat {p.name}")
+                cmds.append(f"wc -l {p.name}")
+                n += 1
+    return [(c, True) for c in cmds]
+
+
+def _collect_direct(ctx, cmd):
+    """Route a non-family LLM prediction through the tier policy. Whole
+    TIER0 commands and TIER0 parts of compound predictions become direct
+    pre-run candidates; everything else is dropped (and logged)."""
+    from spec_tiers import classify, TIER0
+    from spec_compound import split_for_serve, fold_cd_serve
+    seen = ctx.setdefault("direct_seen", set())
+    out = ctx.setdefault("direct_cmds", [])
+
+    def add(c):
+        if c not in seen:
+            seen.add(c)
+            out.append(c)
+
+    if classify(cmd) == TIER0:
+        add(cmd)
+        return
+    parts = split_for_serve(cmd)
+    if parts and len(parts) > 1:
+        parts, _cwd = fold_cd_serve(parts, ".")
+        kept = 0
+        for text, _stop, srv in parts:
+            if srv and classify(text) == TIER0:
+                add(text)
+                kept += 1
+        if kept:
+            print(f"[spec] llm direct (compound): kept {kept}/{len(parts)} "
+                  f"parts of {cmd!r}")
+            return
+    print(f"[spec] llm direct: dropped (tier policy) {cmd!r}")
+
+
+def act_llm_direct(ws, ctx):
+    return [(c, True) for c in ctx.get("direct_cmds", [])]
+
+
 ACTIONS = {
     "git_status": act_git_status,
     "repo_index": act_repo_index,
@@ -292,6 +381,8 @@ ACTIONS = {
     "cargo_fetch": act_cargo_fetch,
     "pytest_targeted": act_pytest_targeted,
     "django_targeted": act_django_targeted,
+    "workspace_recon": act_workspace_recon,
+    "llm_direct": act_llm_direct,
 }
 
 
@@ -337,7 +428,7 @@ def main():
                              ledger_dir=args.ledger_dir)
         if not d.speculate:
             if os.environ.get("SPEC_UPSTREAM_GATE") == "GO":
-                plan = ["repo_index"]
+                plan = ["workspace_recon", "repo_index"]
                 if (ws / ".git").exists():
                     plan.insert(0, "git_status")
                 feats = getattr(d, "features", None) or {}
@@ -357,6 +448,9 @@ def main():
         if not getattr(d, "per_test_ids", True):
             os.environ.setdefault("SPEC_MAX_TEST_IDS", "0")
             print("[spec] gate: file-level granularity only (prediction confidence low)")
+        if os.environ.get("SPEC_RECON", "1") != "0" and \
+                "workspace_recon" not in plan:
+            plan.insert(0, "workspace_recon")
 
     # ---- LLM predictor (build 4): merge its commands into the target hints
     if use_llm and ctx.get("problem_statement"):
@@ -369,9 +463,14 @@ def main():
             record_prediction(args.ledger_dir, ws.name, args.benchmark, "llm",
                               llm_cmds, meta.get("tokens"), meta.get("latency_s"))
         from spec_families import parse_command
+        direct_only = os.environ.get("SPEC_DIRECT_ONLY") == "1"
         for c in llm_cmds:
             pc = parse_command(c)
             if not pc:
+                _collect_direct(ctx, c)
+                continue
+            if direct_only:
+                print(f"[spec] direct-only: family prediction deferred to gated worker: {c!r}")
                 continue
             if pc["family"] == "pytest":
                 ctx.setdefault("pytest_targets", [])
@@ -385,6 +484,10 @@ def main():
                                          if t.split(".")[0] not in ctx["django_labels"]]
                 if "django_targeted" not in plan:
                     plan.append("django_targeted")
+        if ctx.get("direct_cmds") and "llm_direct" not in plan:
+            plan.append("llm_direct")
+            print(f"[spec] llm direct: {len(ctx['direct_cmds'])} "
+                  f"tier0 candidate(s) queued")
 
     # ledger: record what the HEURISTIC would predict (even in llm mode),
     # so heuristic vs llm accuracy accumulate side by side per task.
@@ -407,6 +510,15 @@ def main():
             print(f"[spec] unknown action {name!r}, skipping")
             continue
         for cmd, cacheable in fn(ws, ctx):
+            ikey = None
+            if cacheable == "family":
+                from spec_families import family_key
+                fk = family_key(cmd)
+                ikey = f"fam_{fk}" if fk else None
+            elif cacheable:
+                ikey = cache_key(str(ws), cmd)
+            if ikey:
+                _mark_inflight(cache_dir, ikey, cmd)
             t0 = time.time()
             try:
                 proc = subprocess.run(["bash", "-c", cmd], cwd=ws,
@@ -414,6 +526,8 @@ def main():
                                       timeout=args.timeout_per_cmd)
             except subprocess.TimeoutExpired:
                 print(f"[spec] TIMEOUT {cmd!r}")
+                if ikey:
+                    _clear_inflight(cache_dir, ikey)
                 continue
             dt = time.time() - t0
             if cacheable == "family":
@@ -434,6 +548,8 @@ def main():
                 print(f"[spec] cached  ({dt:5.1f}s, exit {proc.returncode}) {cmd}")
             else:
                 print(f"[spec] warmed  ({dt:5.1f}s, exit {proc.returncode}) {cmd}")
+            if ikey:
+                _clear_inflight(cache_dir, ikey)   # entry already on disk
     print(f"[spec] done: {n_cached} results cached in {cache_dir}")
 
 

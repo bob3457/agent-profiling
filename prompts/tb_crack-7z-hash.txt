@@ -1,0 +1,5 @@
+You are working on a Terminal-Bench-style task in a plain directory (no container). Work only inside the current directory. Install any tools you need with pip (no sudo/apt available).
+
+Task instruction:
+
+You need to create a file called "/app/solution.txt" with the word found in "secret_file.txt" in the "secrets.7z" archive.
