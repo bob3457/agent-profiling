@@ -267,14 +267,91 @@ def _log_serve_decision(cache_dir: str, cmd: str, key, decision: str, entry):
             rec["entry_gen"] = entry.get("generation")
             rec["entry_age_s"] = round(
                 time.time() - entry.get("speculated_at", time.time()), 1)
+            rec["entry_dur_s"] = entry.get("duration_s")
         with open(Path(cache_dir) / "serve_decisions.jsonl", "a") as f:
             f.write(json.dumps(rec) + "\n")
     except OSError:
         pass
 
 
+def _log_prefix_decision(cache_dir, cmd, n, total, saved_s, full):
+    try:
+        with open(Path(cache_dir) / "serve_decisions.jsonl", "a") as f:
+            f.write(json.dumps({
+                "ts": time.time(), "cmd": cmd[:300],
+                "decision": "prefix_serve", "parts_served": n,
+                "parts_total": total, "saved_s": round(saved_s, 3),
+                "full": full}) + "\n")
+    except OSError:
+        pass
+
+
+def _prefix_try_serve(cache_dir: str, cmd: str, cwd: str):
+    """Serve a leading run of a compound's parts from the spec cache.
+
+    Returns None (nothing servable; caller proceeds unchanged) or a dict:
+      remainder: None if fully served, else the re-joined live command
+      cwd:       effective cwd after leading-cd folding (live cmd runs here)
+      stdout/stderr: concatenated served output (prefix of the reply)
+      exit:      compound exit code when fully served, else None
+      n, total, saved_s: telemetry
+    """
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent
+                              / "speculation"))
+        from spec_compound import (split_for_serve, fold_cd_serve, rejoin,
+                                   is_state_cmd, is_cd_cmd)
+    except ImportError:
+        return None
+    split = split_for_serve(cmd)
+    if not split:
+        return None
+    parts, eff_cwd = fold_cd_serve(split, cwd)
+    if not parts:
+        return None                       # pure-cd compound: run live
+    folded = len(parts) < len(split) or eff_cwd != cwd
+    if len(parts) < 2 and not folded:
+        return None                       # simple command: normal path
+    out, err = [], []
+    saved, n, last_exit = 0.0, 0, 0
+    total = len(parts)
+    for i, (text, stop_on_fail, servable) in enumerate(parts):
+        if not servable or is_state_cmd(text) or is_cd_cmd(text):
+            break                         # ends the servable prefix
+        entry = spec_cache_lookup(cache_dir, text, eff_cwd, log=False)
+        if entry is None:
+            break
+        ex = entry.get("exit", 1)
+        if ex != 0 and stop_on_fail and i < total - 1:
+            # `&&` after a failed part: total short-circuit only if every
+            # later joiner is `&&` too; otherwise end the prefix BEFORE the
+            # failure and let bash run the whole tail live (correct, unsaved)
+            if all(s for _, s, _ in parts[i:total - 1]):
+                out.append(entry.get("stdout", ""))
+                err.append(entry.get("stderr", ""))
+                saved += entry.get("duration_s") or 0.0
+                return {"remainder": None, "cwd": eff_cwd,
+                        "stdout": "".join(out), "stderr": "".join(err),
+                        "exit": ex, "n": i + 1, "total": total,
+                        "saved_s": saved}
+            break
+        out.append(entry.get("stdout", ""))
+        err.append(entry.get("stderr", ""))
+        saved += entry.get("duration_s") or 0.0
+        n, last_exit = i + 1, ex
+    if n == 0:
+        return None
+    if n == total:
+        return {"remainder": None, "cwd": eff_cwd, "stdout": "".join(out),
+                "stderr": "".join(err), "exit": last_exit, "n": n,
+                "total": total, "saved_s": saved}
+    return {"remainder": rejoin(parts[n:]), "cwd": eff_cwd,
+            "stdout": "".join(out), "stderr": "".join(err), "exit": None,
+            "n": n, "total": total, "saved_s": saved}
+
+
 # ---------------------------------------------------------------- spec cache
-def spec_cache_lookup(cache_dir: str, cmd: str, cwd: str):
+def spec_cache_lookup(cache_dir: str, cmd: str, cwd: str, log: bool = True):
     """Speculation cache lookup: exact string first, then semantic family key
     (see speculation/spec_families.py). Entry is valid only if the workspace
     fingerprint recorded at speculation time still matches."""
@@ -299,11 +376,14 @@ def spec_cache_lookup(cache_dir: str, cmd: str, cwd: str):
             continue
         reason = _spec_entry_invalid(cache_dir, entry, cwd)
         if reason:
-            _log_serve_decision(cache_dir, cmd, key, reason, entry)
+            if log:
+                _log_serve_decision(cache_dir, cmd, key, reason, entry)
             continue
-        _log_serve_decision(cache_dir, cmd, key, "served", entry)
+        if log:
+            _log_serve_decision(cache_dir, cmd, key, "served", entry)
         return entry
-    if len(keys) > 1:  # a family key existed => speculation-relevant miss
+    if log and (len(keys) > 1 or "pytest" in cmd or "runtests.py" in cmd):
+        # family-keyed OR test-looking => speculation-relevant miss
         _log_serve_decision(cache_dir, cmd, None, "no_entry", None)
     return None
 
@@ -430,6 +510,27 @@ class Daemon:
             self._record(cmd, cwd, res)
             return res
 
+        # compound prefix-serve: serve leading cached parts, run the rest live
+        live_cmd, live_cwd = cmd, cwd
+        pre = None
+        if self.args.spec_cache and not self.args.persist_cwd:
+            pre = _prefix_try_serve(self.args.spec_cache, cmd, cwd)
+        if pre is not None and pre["remainder"] is None:   # fully served
+            self.stats["cache_hits"] += 1
+            self.stats["prefix_serves"] = self.stats.get("prefix_serves", 0) + 1
+            self.stats["commands"] += 1
+            res = {"exit": pre["exit"], "stdout": pre["stdout"],
+                   "stderr": pre["stderr"], "cached": True,
+                   "session_reused": False, "wall_s": 0.0, "cpu_s": 0.0,
+                   "prefix_served": pre["n"], "prefix_total": pre["total"],
+                   "spec_saved_s": round(pre["saved_s"], 3)}
+            _log_prefix_decision(self.args.spec_cache, cmd, pre["n"],
+                                 pre["total"], pre["saved_s"], full=True)
+            self._record(cmd, cwd, res)
+            return res
+        if pre is not None:                                # partial prefix
+            live_cmd, live_cwd = pre["remainder"], pre["cwd"]
+
         near = spec_near_miss(self.args.spec_cache, cmd, cwd)
         if near:
             self.stats["near_misses"] = self.stats.get("near_misses", 0) + 1
@@ -439,7 +540,7 @@ class Daemon:
         if self.args.perf_events:
             self.perf_seq += 1
             perf_out = str(self.perf_dir / f"cmd_{self.perf_seq:04d}.csv")
-        res = session.run(cmd, cwd, timeout,
+        res = session.run(live_cmd, live_cwd, timeout,
                           reset_cwd=not self.args.persist_cwd,
                           perf_events=self.args.perf_events,
                           perf_out=perf_out)
@@ -451,6 +552,15 @@ class Daemon:
                     del self.sessions[key]
         res["cached"] = False
         res["session_reused"] = reused
+        if pre is not None:                # splice served prefix into reply
+            res["stdout"] = pre["stdout"] + res.get("stdout", "")
+            res["stderr"] = pre["stderr"] + res.get("stderr", "")
+            res["prefix_served"] = pre["n"]
+            res["prefix_total"] = pre["total"]
+            res["spec_saved_s"] = round(pre["saved_s"], 3)
+            self.stats["prefix_serves"] = self.stats.get("prefix_serves", 0) + 1
+            _log_prefix_decision(self.args.spec_cache, cmd, pre["n"],
+                                 pre["total"], pre["saved_s"], full=False)
         if near:
             res["near_miss"] = near
         self.stats["commands"] += 1

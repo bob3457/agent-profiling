@@ -112,17 +112,28 @@ run_one() {  # $1 bench, $2 task_id
     fi
     if [[ $ARM == C && ( $bench == swebench || $bench == terminalbench ) ]]; then
       export CODEX_SHELLD_SPEC=$run_dir/spec_cache
-      gate=$(python3 "$OPT/speculation/spec_gate.py" --benchmark "$bench" --workspace "$workdir")
-      echo "$gate" > "$run_dir/gate.json"
-      if echo "$gate" | grep -q '"speculate": true'; then
-        PS_ARG=""
-        [[ $bench == swebench && -f $ROOT/prompts/swe_$tid.txt ]] && PS_ARG="--problem-statement $ROOT/prompts/swe_$tid.txt"
-        nohup python3 "$OPT/speculation/speculative_worker.py" \
+      printf '%s' "$prompt" > "$run_dir/problem.txt"
+      PS_ARG="--problem-statement $run_dir/problem.txt"
+      [[ $bench == swebench && -f $ROOT/prompts/swe_$tid.txt ]] && PS_ARG="--problem-statement $ROOT/prompts/swe_$tid.txt"
+      GATE_XTRA=""
+      [[ $bench == swebench ]] && GATE_XTRA="--statement-only"
+      nohup python3 -u "$OPT/speculation/llm_gate.py" \
+        --problem-statement "$run_dir/problem.txt" \
+        --agent-stream "$run_dir/stdout.jsonl" \
+        --commands-log "$run_dir/shelld_logs/commands.jsonl" \
+        --gate-json "$run_dir/gate.json" --timeout 90 $GATE_XTRA \
+        -- python3 "$OPT/speculation/speculative_worker.py" \
           --workspace "$workdir" --cache-dir "$CODEX_SHELLD_SPEC" --benchmark "$bench" \
           --predictor both --ledger-dir "$ROOT/latency-opt/ledger" \
           $PS_ARG > "$run_dir/spec.log" 2>&1 &
-        echo $! > "$run_dir/spec.pid"
-      fi
+      echo $! > "$run_dir/spec.pid"
+      nohup python3 -u "$OPT/speculation/edit_respec.py" \
+        --workspace "$workdir" --cache-dir "$CODEX_SHELLD_SPEC" \
+        --spec-log "$run_dir/spec.log" \
+        --commands-log "$run_dir/shelld_logs/commands.jsonl" \
+        --agent-stream "$run_dir/stdout.jsonl" \
+        > "$run_dir/respec.log" 2>&1 &
+      echo $! > "$run_dir/respec.pid"
     fi
 
     # ---- the run, whole-run perf + wall time --------------------------------
@@ -137,6 +148,7 @@ run_one() {  # $1 bench, $2 task_id
 
   # ---- teardown --------------------------------------------------------------
   [[ -f "$run_dir/spec.pid" ]] && kill "$(cat "$run_dir/spec.pid")" 2>/dev/null
+  [[ -f "$run_dir/respec.pid" ]] && kill "$(cat "$run_dir/respec.pid")" 2>/dev/null
   [[ $ARM == B || $ARM == C ]] && shelld_shutdown "$sock" >> "$run_dir/daemon_stats.txt"
   [[ $bench == swebench ]] && git -C "$workdir" diff > "$run_dir/pred.patch" 2>/dev/null
 

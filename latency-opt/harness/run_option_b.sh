@@ -63,13 +63,14 @@ fi
 
 # --------------------------------------------------------------------- agent
 AGENT_ENV=""
-if [[ $MODE == spec ]]; then
+if [[ $MODE == spec || $MODE == base ]]; then
   RUNTAG=$(date +%s).$$
   AGENT_ENV="export CODEX_TOOL_PERF_WRAPPER=/opt/latency-opt/scripts/codex_persistent_shell_wrap.sh;
              export CODEX_SHELLD_SOCK=/tmp/shelld.$RUNTAG/sock;
              export CODEX_SHELLD_LOGDIR=/spec_logs/shelld;
-             export CODEX_SHELLD_SPEC=/spec_cache;
              export CODEX_SHELLD_PYTHON=/opt/toolpy/bin/python3;"
+  [[ $MODE == spec ]] && AGENT_ENV="$AGENT_ENV
+             export CODEX_SHELLD_SPEC=/spec_cache;"
 fi
 PROMPT=$(cat "$PROMPT_FILE")
 
@@ -94,7 +95,7 @@ echo $? > "$RESULTS/exit_code"
 [[ -n "$WORKER_PID" ]] && { pkill -P $WORKER_PID 2>/dev/null || true; kill $WORKER_PID 2>/dev/null || true; }
 # shut down the in-container daemon: host PID namespace is shared, so it
 # would otherwise outlive the container (host /tmp socket + old mount ns)
-if [[ $MODE == spec ]]; then
+if [[ $MODE == spec || $MODE == base ]]; then
   python3 - "/tmp/shelld.$RUNTAG/sock" <<'PY' 2>/dev/null || true
 import socket, sys
 s = socket.socket(socket.AF_UNIX); s.settimeout(3)

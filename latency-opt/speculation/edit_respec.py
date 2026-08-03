@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Trajectory-aware speculation watcher (build 7).
+"""Trajectory-aware speculation watcher (build 11: compound decomposition).
 
 Two speculation modes in one process, per the Speculative Actions framing
 (draft signal = the agent's own live trajectory):
@@ -77,7 +77,8 @@ EXCLUDE = {
 STDIO_CAP = 262144          # chars kept per stream in a cached entry
 CMD_TIMEOUT = 120           # s per candidate re-run
 MAX_CANDIDATES_PER_GEN = 6  # variants executed per generation
-MAX_IDLE_RUNS = 8           # total pre-edit (idle) speculative runs
+MAX_IDLE_RUNS = 24          # total pre-edit (idle) speculative runs
+MAX_NODES_PER_FILE = 20     # --collect-only enumeration cap
 DJANGO_RE = re.compile(r"^python3? tests/runtests\.py [A-Za-z0-9_. ]+$")
 # test-path tokens leaked in reasoning/message text, e.g.
 #   astropy/coordinates/tests/test_x.py::test_y
@@ -89,18 +90,18 @@ def _log(msg):
 
 
 STOP = False
-CURRENT_PROC = None  # in-flight candidate re-run, killed on SIGTERM
+CURRENT_PROCS = set()  # in-flight candidate re-runs, killed on SIGTERM
 
 
 def _sigterm(_sig, _frm):
     global STOP
     STOP = True
-    p = CURRENT_PROC
-    if p is not None and p.poll() is None:
-        try:
-            p.kill()
-        except OSError:
-            pass
+    for p in list(CURRENT_PROCS):
+        if p.poll() is None:
+            try:
+                p.kill()
+            except OSError:
+                pass
 
 
 # ------------------------------------------------------------ deep fingerprint
@@ -192,11 +193,46 @@ def _family_key(cmd: str):
 
 
 # ----------------------------------------------------------------- trajectory
+def _classify(cmd: str) -> str:
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from spec_tiers import classify
+        return classify(cmd)
+    except ImportError:
+        # fallback: legacy benchmark-shaped gate, tier0-only
+        if any(ch in cmd for ch in ("&&", "||", ";", "|", ">", "<", "`", "$(")):
+            return "none"
+        ok = _family_key(cmd) is not None or bool(DJANGO_RE.match(cmd.strip()))
+        return "tier0" if ok else "none"
+
+
 def is_testlike(cmd: str) -> bool:
-    """Conservative: only commands we can safely and usefully pre-run."""
-    if any(ch in cmd for ch in ("&&", "||", ";", "|", ">", "<", "`", "$(")):
-        return False
-    return _family_key(cmd) is not None or bool(DJANGO_RE.match(cmd.strip()))
+    return _classify(cmd) != "none"
+
+
+def decompose_leading(cmd: str, ws: str):
+    """For a compound the tier policy refuses whole, return the maximal
+    LEADING run of individually-speculable parts (never skip a part: later
+    parts may depend on earlier effects). A leading `cd <ws>` folds away
+    only when it targets the workspace itself -- our pre-runs execute with
+    cwd=ws, and the daemon keys lookups on that cwd."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from spec_compound import split_compound, fold_cd
+    except ImportError:
+        return []
+    parts = split_compound(cmd)
+    if not parts or len(parts) < 2:
+        return []
+    parts, cwd = fold_cd(parts, ws)
+    if os.path.realpath(cwd) != os.path.realpath(ws):
+        return []
+    out = []
+    for part, _stop in parts:
+        if _classify(part) == "none":
+            break
+        out.append(part)
+    return out
 
 
 def file_level(cmd: str) -> str:
@@ -207,13 +243,15 @@ def file_level(cmd: str) -> str:
 class Trajectory:
     """Incremental readers for the agent's leaked signals."""
 
-    def __init__(self, commands_log, agent_stream):
+    def __init__(self, commands_log, agent_stream, ws):
         self.commands_log = commands_log
         self.agent_stream = agent_stream
+        self.ws = ws
         self.cmd_lines = 0
         self.stream_off = 0
         self.seen = set()
-        self.order = []   # insertion-ordered; newest = strongest post-edit
+        self.agent_order = []   # agent's own executed commands: gold
+        self.stream_order = []  # reasoning-stream leaks: weakest signal
 
     def _new_agent_cmds(self):
         if not self.commands_log:
@@ -228,8 +266,11 @@ class Trajectory:
                 cmd = json.loads(ln).get("cmd", "")
             except (json.JSONDecodeError, AttributeError):
                 continue
+            cmd = cmd.strip()
             if is_testlike(cmd):
-                out.append(cmd.strip())
+                out.append(cmd)
+            else:
+                out.extend(decompose_leading(cmd, self.ws))
         self.cmd_lines = len(lines)
         return out
 
@@ -245,7 +286,20 @@ class Trajectory:
             return []
         out = []
         for tok in STREAM_PATH_RE.findall(chunk):
-            out.append(f"python -m pytest {tok}")
+            path = tok.split("::")[0]
+            base = os.path.basename(path)
+            # only paths that actually exist in the workspace AND look like
+            # tests -- run 142526 harvested \n-escape artifacts, %2F
+            # url-encodings, and full URLs, which then exhausted both budgets
+            if not (base.startswith("test_") or "/tests/" in path):
+                continue
+            rel = path.lstrip("/")
+            if rel.startswith("testbed/"):
+                rel = rel[len("testbed/"):]
+            if not os.path.exists(os.path.join(self.ws, rel)):
+                continue
+            node = tok[len(path):]
+            out.append(f"python -m pytest {rel}{node}")
         return out
 
     def harvest(self):
@@ -253,12 +307,13 @@ class Trajectory:
         signal), then stream-leaked paths. Node-level candidates also emit
         their file-level sibling. Deduped across the run."""
         fresh = []
-        for src in (self._new_agent_cmds(), self._new_stream_paths()):
+        for src, order in ((self._new_agent_cmds(), self.agent_order),
+                           (self._new_stream_paths(), self.stream_order)):
             for c in src:
                 for v in (c, file_level(c)):
                     if v not in self.seen and is_testlike(v):
                         self.seen.add(v)
-                        self.order.append(v)
+                        order.append(v)
                         fresh.append(v)
         return fresh
 
@@ -339,6 +394,14 @@ def main():
                     help="codex --json stdout.jsonl: reasoning text leaks "
                          "test paths before execution")
     ap.add_argument("--max-idle-runs", type=int, default=MAX_IDLE_RUNS)
+    ap.add_argument("--parallel", type=int, default=6,
+                    help="concurrent speculative runs; fuse-overlayfs is "
+                         "near-single-threaded for I/O, keep modest")
+    ap.add_argument("--max-per-gen", type=int, default=16)
+    ap.add_argument("--enumerate-nodes", action="store_true", default=True,
+                    help="pytest --collect-only the top candidate files and "
+                         "speculate node-level variants (fixes node-key "
+                         "first-use misses)")
     ap.add_argument("--poll", type=float, default=1.0)
     ap.add_argument("--max-generations", type=int, default=5)
     ap.add_argument("--cmd-timeout", type=int, default=CMD_TIMEOUT)
@@ -365,48 +428,137 @@ def main():
 
     gens_executed = 0
     idle_runs = 0
-    traj = Trajectory(args.commands_log, args.agent_stream)
+    traj = Trajectory(args.commands_log, args.agent_stream, ws)
     done_at_gen = set()   # (gen, cmd) already cached
 
+    def _spawn(cmd):
+        pr = subprocess.Popen(["bash", "-lc", cmd], cwd=ws, text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              preexec_fn=lambda: os.nice(10))
+        pr._cmd, pr._t0 = cmd, time.time()
+        CURRENT_PROCS.add(pr)
+        return pr
+
+    def _reap(pr, gen):
+        out, err = pr.communicate()
+        CURRENT_PROCS.discard(pr)
+        dur = time.time() - pr._t0
+        if read_generation(cache_dir) != gen:
+            _log(f"gen {gen}: raced by newer edit, discarding {pr._cmd!r}")
+            return False
+        keys = store_entry(cache_dir, ws,  pr._cmd,
+                           subprocess.CompletedProcess(pr._cmd, pr.returncode,
+                                                       out, err), dur, gen)
+        done_at_gen.add((gen, pr._cmd))
+        _ledger_tier1(pr._cmd, gen)
+        _log(f"gen {gen}: cached exit={pr.returncode} {dur:.2f}s "
+             f"{pr._cmd!r} keys={[k[:12] for k in keys]}")
+        return True
+
     def run_batch(cands, gen, budget):
-        """Pre-run candidates against the current tree, newest-gen-stamped.
-        Returns number executed. Discards on generation race."""
-        global CURRENT_PROC
-        n = 0
-        for cmd in cands:
-            if STOP or n >= budget:
-                break
-            if (gen, cmd) in done_at_gen:
-                continue
-            t1 = time.time()
-            try:
-                CURRENT_PROC = subprocess.Popen(
-                    ["bash", "-lc", cmd], cwd=ws, text=True,
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    preexec_fn=lambda: os.nice(10))
-                out, err = CURRENT_PROC.communicate(timeout=args.cmd_timeout)
-                res = subprocess.CompletedProcess(
-                    cmd, CURRENT_PROC.returncode, out, err)
-            except subprocess.TimeoutExpired:
-                CURRENT_PROC.kill()
-                CURRENT_PROC.communicate()
-                _log(f"gen {gen}: TIMEOUT {cmd!r}")
-                continue
-            except OSError as e:
-                _log(f"gen {gen}: exec error {cmd!r}: {e}")
-                continue
-            finally:
-                CURRENT_PROC = None
-            dur = time.time() - t1
+        """Run candidates CONCURRENTLY (up to --parallel) so the whole batch
+        lands ~max(test) after the bump instead of sum(test) -- photo-finish
+        queries meet a full cache instead of a serial queue. Discards on
+        generation race; returns completed count."""
+        pending = [c for c in cands if (gen, c) not in done_at_gen][:budget]
+        n, live = 0, []
+        while (pending or live) and not STOP:
+            while pending and len(live) < args.parallel:
+                try:
+                    live.append(_spawn(pending.pop(0)))
+                except OSError as e:
+                    _log(f"gen {gen}: exec error: {e}")
+            for pr in list(live):
+                if pr.poll() is not None:
+                    live.remove(pr)
+                    if _reap(pr, gen):
+                        n += 1
+            for pr in list(live):
+                if time.time() - pr._t0 > args.cmd_timeout:
+                    pr.kill()
+                    pr.communicate()
+                    CURRENT_PROCS.discard(pr)
+                    live.remove(pr)
+                    _log(f"gen {gen}: TIMEOUT {pr._cmd!r}")
             if read_generation(cache_dir) != gen:
-                _log(f"gen {gen}: raced by newer edit, discarding {cmd!r}")
-                break
-            keys = store_entry(cache_dir, ws, cmd, res, dur, gen)
-            done_at_gen.add((gen, cmd))
-            n += 1
-            _log(f"gen {gen}: cached exit={res.returncode} "
-                 f"{dur:.2f}s {cmd!r} keys={[k[:12] for k in keys]}")
+                for pr in live:
+                    pr.kill(); pr.communicate(); CURRENT_PROCS.discard(pr)
+                _log(f"gen {gen}: raced by newer edit, batch abandoned")
+                return n
+            time.sleep(0.05)
+        for pr in live:  # STOP path
+            pr.kill(); pr.communicate(); CURRENT_PROCS.discard(pr)
         return n
+
+    node_cache = {}
+    undo = cache_dir / "undo_ledger.jsonl"
+
+    def _ledger_tier1(cmd, gen):
+        if _classify(cmd) != "tier1":
+            return
+        try:
+            from spec_tiers import created_paths
+            with open(undo, "a") as f:
+                f.write(json.dumps({"gen": gen, "cmd": cmd,
+                                    "paths": created_paths(cmd)}) + "\n")
+        except (ImportError, OSError):
+            pass
+
+    def _undo_gc():
+        """Remove tier-1 speculation residue the agent never adopted:
+        still-empty dirs and still-zero-length files only -- anything the
+        agent populated stays untouched."""
+        if not undo.exists():
+            return
+        removed = 0
+        for ln in undo.read_text(errors="replace").splitlines():
+            try:
+                rec = json.loads(ln)
+            except json.JSONDecodeError:
+                continue
+            for rel in rec.get("paths", []):
+                q = Path(ws) / rel if not rel.startswith("/") else Path(rel)
+                try:
+                    if q.is_dir() and not any(q.iterdir()):
+                        q.rmdir(); removed += 1
+                    elif q.is_file() and q.stat().st_size == 0:
+                        q.unlink(); removed += 1
+                    # mkdir -p intermediates: prune now-empty parents, never
+                    # crossing the workspace root
+                    parent = q.parent
+                    while (str(parent).startswith(ws) and parent != Path(ws)
+                           and parent.is_dir() and not any(parent.iterdir())):
+                        parent.rmdir(); removed += 1
+                        parent = parent.parent
+                except OSError:
+                    pass
+        if removed:
+            _log(f"undo: removed {removed} unclaimed tier-1 artifact(s)")
+
+    def enumerate_nodes(cands):
+        """--collect-only the distinct files in candidates; return node-level
+        variants (zero tokens, ~1s per file, cached per file)."""
+        if not args.enumerate_nodes:
+            return []
+        files, out = [], []
+        for c in cands:
+            m = re.search(r"(\S+\.py)(?:::\S+)?", c)
+            if m and m.group(1) not in files:
+                files.append(m.group(1))
+        for f in files[:3]:
+            if f not in node_cache:
+                try:
+                    r = subprocess.run(
+                        ["bash", "-lc",
+                         f"python -m pytest --collect-only -q {f}"],
+                        cwd=ws, text=True, capture_output=True, timeout=60,
+                        preexec_fn=lambda: os.nice(10))
+                    node_cache[f] = [ln.strip() for ln in r.stdout.splitlines()
+                                     if "::" in ln][:MAX_NODES_PER_FILE]
+                except (subprocess.TimeoutExpired, OSError):
+                    node_cache[f] = []
+            out += [f"python -m pytest {n} -q" for n in node_cache[f]]
+        return [c for c in out if is_testlike(c)]
 
     while not STOP:
         time.sleep(poll)
@@ -437,15 +589,19 @@ def main():
         # union, strongest signal first: agent's own probes (newest first),
         # then stream leaks, then the worker predictor's list
         pred = parse_candidates(args.spec_log)
-        ordered = list(dict.fromkeys(traj.order[::-1] + pred))
+        ordered = list(dict.fromkeys(
+            traj.agent_order[::-1] + pred + traj.stream_order[::-1]))
         cands = expand_variants(ordered)
         if not cands:
             _log(f"gen {gen}: no candidates from trajectory or "
                  f"{args.spec_log} yet")
             continue
-        run_batch(cands, gen, MAX_CANDIDATES_PER_GEN)
+        cands = cands + [c for c in enumerate_nodes(ordered)
+                         if c not in cands]
+        run_batch(cands, gen, args.max_per_gen)
         baseline = deep_fingerprint(ws)
 
+    _undo_gc()
     _log("stopped")
 
 

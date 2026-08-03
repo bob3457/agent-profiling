@@ -92,6 +92,7 @@ def cache_put_family(cache_dir: Path, cwd: str, cmd: str, proc, fingerprint: str
         "cmd": cmd, "cwd": cwd, "exit": proc.returncode,
         "stdout": proc.stdout[-512 * 1024:], "stderr": proc.stderr[-64 * 1024:],
         "workspace_fingerprint": fingerprint, "speculated_at": time.time(),
+        "duration_s": getattr(proc, "spec_duration_s", None),
         "family": True,
     }
     (cache_dir / f"fam_{fk}.json").write_text(json.dumps(entry))
@@ -106,6 +107,7 @@ def cache_put(cache_dir: Path, cwd: str, cmd: str, proc, fingerprint: str):
         "stderr": proc.stderr[-64 * 1024:],
         "workspace_fingerprint": fingerprint,
         "speculated_at": time.time(),
+        "duration_s": getattr(proc, "spec_duration_s", None),
     }
     (cache_dir / f"{cache_key(cwd, cmd)}.json").write_text(json.dumps(entry))
 
@@ -334,9 +336,20 @@ def main():
                              task_text=ctx.get("problem_statement", ""),
                              ledger_dir=args.ledger_dir)
         if not d.speculate:
-            print(f"[spec] gate says no: {d.reason}")
-            return
-        plan = d.actions
+            if os.environ.get("SPEC_UPSTREAM_GATE") == "GO":
+                plan = ["repo_index"]
+                if (ws / ".git").exists():
+                    plan.insert(0, "git_status")
+                feats = getattr(d, "features", None) or {}
+                if feats.get("py_project") or feats.get("has_tests"):
+                    plan += ["pytest_collect", "pytest_run_cached"]
+                print(f"[spec] internal gate refused ({d.reason}) but "
+                      f"upstream LLM gate said GO -> generic plan {plan}")
+            else:
+                print(f"[spec] gate says no: {d.reason}")
+                return
+        else:
+            plan = d.actions
         print(f"[spec] gate: {d.reason} -> {plan} (conf {d.confidence})")
         if args.predictor == "gate":
             use_llm = getattr(d, "use_llm", False)
@@ -404,6 +417,7 @@ def main():
                 continue
             dt = time.time() - t0
             if cacheable == "family":
+                proc.spec_duration_s = dt   # entries record real cost for saved_s
                 if cache_put_family(cache_dir, str(ws), cmd,
                                     proc, workspace_fingerprint(str(ws))):
                     n_cached += 1
@@ -414,6 +428,7 @@ def main():
                 # Fingerprint is taken AFTER the command (the state the agent
                 # will see). If the agent later edits files, the entry simply
                 # won't validate and the command runs for real. Safe by design.
+                proc.spec_duration_s = dt   # entries record real cost for saved_s
                 cache_put(cache_dir, str(ws), cmd, proc, workspace_fingerprint(str(ws)))
                 n_cached += 1
                 print(f"[spec] cached  ({dt:5.1f}s, exit {proc.returncode}) {cmd}")
