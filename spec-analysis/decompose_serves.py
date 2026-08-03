@@ -73,9 +73,10 @@ def parse_daemon_stats(run_dir: Path):
     stats = None
     for ln in f.read_text(errors="replace").splitlines():
         ln = ln.strip()
-        if ln.startswith("{"):
+        i = ln.find("{")
+        if i >= 0:
             try:
-                stats = json.loads(ln)
+                stats = json.loads(ln[i:])
             except json.JSONDecodeError:
                 pass
     return stats
