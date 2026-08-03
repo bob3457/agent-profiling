@@ -408,6 +408,38 @@ def main():
     ap.add_argument("--ledger-dir", default=None)
     args = ap.parse_args()
 
+    # ---- speculation CPU accounting (SPEC_CPU_OUT) ---------------------------
+    _cpu_out = os.environ.get("SPEC_CPU_OUT")
+    if _cpu_out:
+        import atexit
+        import resource
+        import signal as _sig
+        _cpu_t0 = time.time()
+
+        def _dump_cpu(*_a):
+            try:
+                su = resource.getrusage(resource.RUSAGE_SELF)
+                ch = resource.getrusage(resource.RUSAGE_CHILDREN)
+                rec = {"tag": os.environ.get("SPEC_CPU_TAG", "spec_worker"),
+                       "utime_s": round(su.ru_utime, 3),
+                       "stime_s": round(su.ru_stime, 3),
+                       "children_utime_s": round(ch.ru_utime, 3),
+                       "children_stime_s": round(ch.ru_stime, 3),
+                       "cpu_total_s": round(su.ru_utime + su.ru_stime
+                                            + ch.ru_utime + ch.ru_stime, 3),
+                       "maxrss_kb": max(su.ru_maxrss, ch.ru_maxrss),
+                       "wall_s": round(time.time() - _cpu_t0, 3)}
+                _tag = rec["tag"]
+                with open(os.path.join(_cpu_out, f"cpu_{_tag}.json"), "w") as f:
+                    json.dump(rec, f)
+            except OSError:
+                pass
+            if _a:                      # SIGTERM path: dump then die
+                os._exit(0)
+
+        atexit.register(_dump_cpu)
+        _sig.signal(_sig.SIGTERM, _dump_cpu)
+
     ws = Path(args.workspace).resolve()
     cache_dir = Path(args.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)

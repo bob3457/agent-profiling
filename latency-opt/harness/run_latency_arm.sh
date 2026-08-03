@@ -27,6 +27,7 @@ EVAL_SET=${EVAL_SET:-$OPT/eval_set.txt}
 WS_ROOT=${WS_ROOT:-/scratch/czhai/latency-eval/workspaces}
 TB_TASKS_DIR=${TB_TASKS_DIR:-$ROOT/runs/terminalbench}
 HOTPOT_MANIFEST=${HOTPOT_MANIFEST:-$(ls $ROOT/manifests/hotpotqa*.tsv 2>/dev/null | head -1)}
+FRESHQA_MANIFEST=${FRESHQA_MANIFEST:-$(ls $ROOT/manifests/freshqa_cpu_study_*.tsv 2>/dev/null | head -1)}
 CODEX_BIN=${CODEX_BIN:-${CODEX_SRC_BIN:-codex}}
 # gate + predictor LLM calls use the same binary as the agent by default
 export SPEC_LLM_BIN=${SPEC_LLM_BIN:-$CODEX_BIN}
@@ -76,6 +77,15 @@ run_one() {  # $1 bench, $2 task_id
       prompt=$(cat "$ROOT/$pf")
       workdir=$run_dir/work; mkdir -p "$workdir"
       ;;
+    freshqa)
+      # manifest columns: qid <TAB> base_task_path <TAB> prompt_file
+      local fpf
+      fpf=$(awk -F'\t' -v q="$tid" '$1==q {print $3; exit}' "$FRESHQA_MANIFEST")
+      [[ -z "$fpf" ]] && { echo "  SKIP: qid $tid not in manifest"; return; }
+      [[ -f "$ROOT/$fpf" ]] || { echo "  SKIP: prompt file missing: $ROOT/$fpf"; return; }
+      prompt=$(cat "$ROOT/$fpf")
+      workdir=$run_dir/work; mkdir -p "$workdir"
+      ;;
     swebench)
       workdir=$WS_ROOT/$tid
       [[ -d "$workdir" ]] || { echo "  SKIP: workspace missing for $tid"; return; }
@@ -119,8 +129,9 @@ run_one() {  # $1 bench, $2 task_id
       export CODEX_SHELLD_SOCK=$sock
       export CODEX_SHELLD_LOGDIR=$run_dir/shelld_logs
     fi
-    if [[ $ARM == C && ( $bench == swebench || $bench == terminalbench ) ]]; then
+    if [[ $ARM == C && ( $bench == swebench || $bench == terminalbench || "${SPEC_ALL_BENCH:-0}" == "1" ) ]]; then
       export CODEX_SHELLD_SPEC=$run_dir/spec_cache
+      export SPEC_CPU_OUT=$run_dir
       mkdir -p "$CODEX_SHELLD_SPEC"
       printf '%s' "$prompt" > "$run_dir/problem.txt"
       # T=0 ungated worker: recon everywhere; on TB also the LLM predictor in
@@ -130,7 +141,7 @@ run_one() {  # $1 bench, $2 task_id
       EARLY_XTRA=""
       [[ $bench == terminalbench ]] && \
         EARLY_XTRA="--predictor llm --problem-statement $run_dir/problem.txt --timeout-per-cmd 20"
-      SPEC_DIRECT_ONLY=1 nohup python3 -u "$OPT/speculation/speculative_worker.py" \
+      SPEC_DIRECT_ONLY=1 SPEC_CPU_TAG=spec_early nohup python3 -u "$OPT/speculation/speculative_worker.py" \
         --workspace "$workdir" --cache-dir "$CODEX_SHELLD_SPEC" --benchmark "$bench" \
         --actions workspace_recon $EARLY_XTRA --nice 10 \
         > "$run_dir/spec_early.log" 2>&1 &
@@ -139,7 +150,7 @@ run_one() {  # $1 bench, $2 task_id
       [[ $bench == swebench && -f $ROOT/prompts/swe_$tid.txt ]] && PS_ARG="--problem-statement $ROOT/prompts/swe_$tid.txt"
       GATE_XTRA="--statement-only"
       [[ "${SPEC_GATE_STREAM:-0}" == "1" ]] && GATE_XTRA=""
-      nohup python3 -u "$OPT/speculation/llm_gate.py" \
+      SPEC_CPU_TAG=spec_worker nohup python3 -u "$OPT/speculation/llm_gate.py" \
         --problem-statement "$run_dir/problem.txt" \
         --agent-stream "$run_dir/stdout.jsonl" \
         --commands-log "$run_dir/shelld_logs/commands.jsonl" \

@@ -172,6 +172,7 @@ def main():
 
     t0 = time.time()
     verdict, reason, action, kind = "GO", "fail-open default", None, None
+    gate_tokens, gate_chars = None, None
     if args.gate_json:                 # killed-before-decision must be visible
         try:
             with open(args.gate_json, "w") as f:
@@ -196,6 +197,16 @@ def main():
                                    else "(not observed; judge from the task "
                                         "alone)"))],
             capture_output=True, text=True, timeout=90)
+        gate_out = (r.stdout or "") + (r.stderr or "")
+        _m = re.findall(r"(?:tokens?[ _]used|total[ _]tokens)\D{0,4}([\d,]+)",
+                        gate_out, re.IGNORECASE)
+        _tok = max((int(x.replace(",", "")) for x in _m), default=0)
+        gate_tokens = ({"total": _tok, "estimated": False} if _tok else
+                       {"total": int((len(PROMPT) + len(stmt)
+                                      + len(gate_out)) / 4),
+                        "estimated": True})
+        gate_chars = {"prompt": len(PROMPT) + len(stmt),
+                      "answer": len(gate_out)}
         words = [w.strip().upper() for w in (r.stdout or "").split()]
         ans = next((w for w in reversed(words) if w in ("YES", "NO")), None)
         if ans == "NO":
@@ -207,10 +218,13 @@ def main():
     except Exception as e:
         reason = f"gate error ({type(e).__name__}: {e}), failing open"
 
+    shadow = os.environ.get("SPEC_GATE_SHADOW", "0") == "1"
     rec = {"speculate": verdict == "GO", "reason": reason,
            "first_action": (action or "")[:300],
            "signal": kind,
            "gate_latency_s": round(time.time() - t0, 1),
+           "tokens": gate_tokens, "chars": gate_chars,
+           "shadow": shadow,
            "gate": "llm_gate_v2"}
     if args.gate_json:
         try:
@@ -221,9 +235,24 @@ def main():
     print(f"[gate] {verdict}: {reason} (first_action={rec['first_action'][:80]!r}, "
           f"{rec['gate_latency_s']}s)", flush=True)
 
-    if verdict == "GO" and worker:
+    if worker and (verdict == "GO" or shadow):
+        # shadow: verdict recorded above, speculation runs regardless so the
+        # decision can be SCORED against realized serve value
         os.environ["SPEC_UPSTREAM_GATE"] = "GO"   # worker: skip internal re-gate
         os.execvp(worker[0], worker)   # become the worker: pid continuity
+    if os.environ.get("SPEC_CPU_OUT"):            # enforced NOGO: gate's own
+        try:                                       # LLM-call CPU still counts
+            import resource
+            su = resource.getrusage(resource.RUSAGE_SELF)
+            ch = resource.getrusage(resource.RUSAGE_CHILDREN)
+            with open(os.path.join(os.environ["SPEC_CPU_OUT"],
+                                   "cpu_gate_nogo.json"), "w") as f:
+                json.dump({"tag": "gate_nogo",
+                           "cpu_total_s": round(su.ru_utime + su.ru_stime
+                                                + ch.ru_utime + ch.ru_stime,
+                                                3)}, f)
+        except OSError:
+            pass
     sys.exit(0)
 
 
