@@ -122,7 +122,7 @@ run_one() {  # $1 bench, $2 task_id
   [[ -n "$workdir" ]] && workdir=$(realpath "$workdir")
 
   # ---- arm-specific env ------------------------------------------------------
-  local sock="/tmp/czhai_shelld/$ARM.$bench.$tid/sock"
+  local sock="/tmp/czhai_shelld/$ARM.$bench.$tid/sock" spec_pid=""
   (
     if [[ $ARM == B || $ARM == C ]]; then
       export CODEX_TOOL_PERF_WRAPPER=$OPT/scripts/codex_persistent_shell_wrap.sh
@@ -157,8 +157,8 @@ run_one() {  # $1 bench, $2 task_id
         --gate-json "$run_dir/gate.json" --timeout 90 $GATE_XTRA \
         -- python3 "$OPT/speculation/speculative_worker.py" \
           --workspace "$workdir" --cache-dir "$CODEX_SHELLD_SPEC" --benchmark "$bench" \
-          --predictor "$([[ $bench == terminalbench ]] && echo heuristic || echo both)" \
-          --ledger-dir "${LEDGER_DIR:-$ROOT/latency-opt/ledger}" \
+          --predictor $([[ $bench == terminalbench ]] && echo heuristic || echo both) \
+          --ledger-dir "$ROOT/latency-opt/ledger" \
           $PS_ARG > "$run_dir/spec.log" 2>&1 &
       echo $! > "$run_dir/spec.pid"
       nohup python3 -u "$OPT/speculation/edit_respec.py" \
@@ -171,9 +171,7 @@ run_one() {  # $1 bench, $2 task_id
     fi
 
     # ---- the run, whole-run perf + wall time --------------------------------
-    # no `set -e` in this script: an unguarded failed cd would run codex in
-    # the caller's cwd and silently corrupt the arm's numbers
-    cd "$workdir" || { echo "FATAL: cd $workdir failed" >&2; echo 97 > "$run_dir/exit_code"; exit 97; }
+    cd "$workdir"
     if [[ "${DEEPDIVE:-0}" == "1" && $ARM == A ]]; then export CODEX_TOOL_PERF_DIR="$run_dir/tool_perf"; mkdir -p "$CODEX_TOOL_PERF_DIR"; fi
     /usr/bin/time -v -o "$run_dir/time.txt" \
       perf stat -e "$PERF_EVENTS" -o "$run_dir/perf_stat.txt" -- \
@@ -183,20 +181,13 @@ run_one() {  # $1 bench, $2 task_id
   )
 
   # ---- teardown --------------------------------------------------------------
-  # kill children first: a speculated command still in flight would otherwise
-  # outlive its worker (same pattern as run_option_b.sh)
-  local pf pid
-  for pf in spec_early.pid spec.pid respec.pid; do
-    [[ -f "$run_dir/$pf" ]] || continue
-    pid=$(cat "$run_dir/$pf")
-    pkill -P "$pid" 2>/dev/null || true
-    kill "$pid" 2>/dev/null || true
-  done
+  [[ -f "$run_dir/spec_early.pid" ]] && kill "$(cat "$run_dir/spec_early.pid")" 2>/dev/null
+  [[ -f "$run_dir/spec.pid" ]] && kill "$(cat "$run_dir/spec.pid")" 2>/dev/null
+  [[ -f "$run_dir/respec.pid" ]] && kill "$(cat "$run_dir/respec.pid")" 2>/dev/null
   [[ $ARM == B || $ARM == C ]] && shelld_shutdown "$sock" >> "$run_dir/daemon_stats.txt"
   [[ $bench == swebench ]] && git -C "$workdir" diff > "$run_dir/pred.patch" 2>/dev/null
 
-  local wall
-  wall=$(grep -m1 "Elapsed" "$run_dir/time.txt" 2>/dev/null | awk '{print $NF}')
+  local wall=$(grep -m1 "Elapsed" "$run_dir/time.txt" 2>/dev/null | awk '{print $NF}')
   echo "  done $bench/$tid  wall=$wall  exit=$(cat "$run_dir/exit_code" 2>/dev/null)"
 }
 

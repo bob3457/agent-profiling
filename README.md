@@ -1,4 +1,29 @@
-# Agent CPU Deep-Dive Profiling — Hopper `/projects` Adaptation
+# agent-profiling
+
+Profiling and latency-optimization toolkit for AI coding agents (Codex CLI)
+on GMU HPC (x86 Hopper nodes and the GH200 aarch64 node).
+
+## Repository layout
+
+| dir | what it is |
+|---|---|
+| `scripts/` | baseline CPU deep-dive pipeline: codex-from-source setup, shell.rs perf-wrapper patcher, per-tool perf runners, batch runner, analyzer, benchmark task materializers (Terminal-Bench, SWE-bench arm25, HotpotQA, FreshQA) |
+| `codex_hooks/` | Pre/PostToolUse/Stop hook script + `hooks.json` |
+| `latency-opt/` | the optimization arms: persistent shell daemon (`scripts/shell_sessiond.py` + wrapper), gated speculative execution (`speculation/`), 3-arm harness (`harness/run_latency_arm.sh`, `harness/run_option_b.sh`), arm comparison and window reports. See `latency-opt/README.md` |
+| `spec-agnostic/` | task-agnostic speculator iteration: corpus coverage tool, smoke tests. See `spec-agnostic/NOTES.md` |
+| `manifests/` | which benchmark instances each study ran (tiny, provenance) |
+| `prompts/` | exact prompts sent to the agent (`tbench_*` = the 10 dummy CPU-study tasks; `tb_*` = bare-metal Terminal-Bench materializations; `swe_*`, `hotpot_*`, `fresh_*`) |
+| `archive/` | already-applied one-shot patchers and old coverage outputs — historical only, see `archive/README.md` |
+| `env.sh` | GH200 (aarch64) environment profile — ARM PMU event names; x86 values are in the section below |
+
+Self-tests (all runnable offline from the repo root with `ROOT=$PWD`):
+`latency-opt/speculation/spec_tiers.py`, `.../spec_compound.py`,
+`latency-opt/smoke_prefix_serve.py latency-opt/scripts/shell_sessiond.py`,
+`spec-agnostic/smoke_agnostic.py $PWD`, `spec-agnostic/smoke_inflight.py $PWD`.
+
+---
+
+# Baseline study: Agent CPU Deep-Dive Profiling — Hopper `/projects` Adaptation
 
 Adapted from Tejas's "Codex CPU Deep-Dive Profiling Reproduction Guide" for:
 - Root: `/projects/kzhou6/czhai/agent-profiling` (override with `PROFILING_ROOT` / `ROOT`)
@@ -19,9 +44,10 @@ Adapted from Tejas's "Codex CPU Deep-Dive Profiling Reproduction Guide" for:
 6. `git init -b main` in the git-multibranch task (PDF version breaks if the
    node's git defaults to `master`).
 7. Added `scripts/check_perf.sh` — run it on a compute node FIRST.
-8. Only the baseline study is included (no SWE-bench materializer, no
-   optimization/binding appendix) — this bundle is for learning the pipeline
-   on the 10 dummy Terminal-Bench tasks.
+8. This section covers the baseline study on the 10 dummy Terminal-Bench
+   tasks. (The repo has since grown SWE-bench/HotpotQA/FreshQA materializers
+   in `scripts/` and the full latency-optimization arms in `latency-opt/` —
+   see the layout table at the top.)
 
 ## Run order
 

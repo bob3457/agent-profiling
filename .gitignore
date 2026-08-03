@@ -31,15 +31,6 @@ miniconda*/
 venv/
 
 # --- measurement outputs (large, regenerable, machine-specific)
-results_profiled/
-results_cpu_deepdive/
-results_cpu_record/
-results_cpu_waittrace/
-results_cpu_optimized/
-results_cpu_binding/
-results_cpu_optimization_compare/
-results_cpu_binding_compare/
-results_holistic_optimization_summary*/
 results_*/
 
 # --- materialized task workspaces (regenerable from manifests + datasets;
@@ -91,7 +82,7 @@ auth.json
 # Deliberately TRACKED (do not add these):
 #   manifests/   - defines which examples the study ran (tiny, provenance)
 #   prompts/     - exact prompts sent to the agent (tiny, provenance)
-#   configs/     - PERF_EVENTS lists, cpu binding envs
 #   scripts/     - all runners, wrappers, materializers, analyzers
+#   latency-opt/ - daemon, speculation, harnesses (+ committed ledger sample)
 #   codex_hooks/ - hook script + hooks.json
 # ============================================================

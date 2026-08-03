@@ -42,6 +42,10 @@ fi
 PROMPT="$(cat "$PROMPT_FILE")"
 T0="$(date +%s%N)"
 set +e
+# shellcheck disable=SC2097,SC2098
+# (PERF_EVENTS env prefix is not redundant: it exports the value to the
+#  per-tool wrapper's environment; perf's -e correctly reads the same
+#  parent-shell value)
 (
     cd "$WORK"
     CODEX_PROFILE_JSONL="$OUT/internal.jsonl" \

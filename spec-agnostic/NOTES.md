@@ -1,5 +1,11 @@
 # spec-agnostic — task-agnostic speculator + TB enablement
 
+> **Status (2026-08): fully deployed.** Every change described below is
+> already applied to the files tracked in this repo; the one-shot patchers
+> have been moved to `../archive/patchers/spec-agnostic/`. The deploy steps
+> below are kept as a historical record only — do not re-run them.
+
+
 Contents: one module replacement, three patchers, two tools. All verified
 offline against a copy of the current repo (all 23 smoke checks green,
 patchers idempotent, `bash -n` / `py_compile` clean, spec_compound suite

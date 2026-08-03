@@ -42,7 +42,6 @@ import hashlib
 import json
 import os
 import signal
-import socket
 import socketserver
 import subprocess
 import sys
