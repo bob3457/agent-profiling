@@ -41,8 +41,9 @@ def check(name, ok, detail=""):
 
 tmp = Path(tempfile.mkdtemp(prefix="smoke_measure."))
 ROOT = tmp / "repo"
-shutil.copytree(SRC, ROOT, symlinks=True,
-                ignore=shutil.ignore_patterns(".git", "runs", "results"))
+ROOT.mkdir(parents=True)
+shutil.copytree(SRC / "latency-opt", ROOT / "latency-opt", symlinks=True,
+                ignore=shutil.ignore_patterns("ledger", "__pycache__"))
 
 # ---- P: patch, idempotency, syntax --------------------------------------------
 r1 = subprocess.run([PY, str(HERE / "patch_measure.py"), str(ROOT)],

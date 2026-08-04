@@ -93,15 +93,25 @@ STOP = False
 CURRENT_PROCS = set()  # in-flight candidate re-runs, killed on SIGTERM
 
 
+def _kill_tree(pr):
+    """Kill the candidate's whole process group. pr.kill() alone kills only
+    the bash -lc wrapper, orphaning the payload (which keeps running against
+    the workspace AND holds the output pipes open, pinning communicate())."""
+    try:
+        os.killpg(os.getpgid(pr.pid), signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        try:
+            pr.kill()
+        except OSError:
+            pass
+
+
 def _sigterm(_sig, _frm):
     global STOP
     STOP = True
     for p in list(CURRENT_PROCS):
         if p.poll() is None:
-            try:
-                p.kill()
-            except OSError:
-                pass
+            _kill_tree(p)
 
 
 # ------------------------------------------------------------ deep fingerprint
@@ -471,12 +481,17 @@ def main():
     def _spawn(cmd):
         try:
             _inflight_path(cmd).write_text(json.dumps(
-                {"ts": time.time(), "pid": os.getpid(), "cmd": cmd[:200]}))
+                {"ts": time.time(), "pid": os.getpid(), "cmd": cmd[:200],
+                 "gen": str(read_generation(cache_dir))}))
         except OSError:
             pass
+        def _pre():                      # own session: killable as a
+            os.setsid()                      # tree; nice as before
+            os.nice(10)
+
         pr = subprocess.Popen(["bash", "-lc", cmd], cwd=ws, text=True,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                              preexec_fn=lambda: os.nice(10))
+                              preexec_fn=_pre)
         pr._cmd, pr._t0 = cmd, time.time()
         CURRENT_PROCS.add(pr)
         return pr
@@ -525,19 +540,19 @@ def main():
                         n += 1
             for pr in list(live):
                 if time.time() - pr._t0 > args.cmd_timeout:
-                    pr.kill()
+                    _kill_tree(pr)
                     pr.communicate()
                     CURRENT_PROCS.discard(pr)
                     live.remove(pr)
                     _log(f"gen {gen}: TIMEOUT {pr._cmd!r}")
             if read_generation(cache_dir) != gen:
                 for pr in live:
-                    pr.kill(); pr.communicate(); CURRENT_PROCS.discard(pr)
+                    _kill_tree(pr); pr.communicate(); CURRENT_PROCS.discard(pr)
                 _log(f"gen {gen}: raced by newer edit, batch abandoned")
                 return n
             time.sleep(0.05)
         for pr in live:  # STOP path
-            pr.kill(); pr.communicate(); CURRENT_PROCS.discard(pr)
+            _kill_tree(pr); pr.communicate(); CURRENT_PROCS.discard(pr)
         return n
 
     node_cache = {}
