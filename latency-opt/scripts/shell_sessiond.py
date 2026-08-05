@@ -273,14 +273,18 @@ def _log_serve_decision(cache_dir: str, cmd: str, key, decision: str, entry):
         pass
 
 
-def _log_prefix_decision(cache_dir, cmd, n, total, saved_s, full):
+def _log_prefix_decision(cache_dir, cmd, n, total, saved_s, full,
+                         stop_reason=None, stop_part=None):
     try:
+        rec = {"ts": time.time(), "cmd": cmd[:300],
+               "decision": "prefix_serve", "parts_served": n,
+               "parts_total": total, "saved_s": round(saved_s, 3),
+               "full": full}
+        if stop_reason:
+            rec["stop_reason"] = stop_reason
+            rec["stop_part"] = stop_part
         with open(Path(cache_dir) / "serve_decisions.jsonl", "a") as f:
-            f.write(json.dumps({
-                "ts": time.time(), "cmd": cmd[:300],
-                "decision": "prefix_serve", "parts_served": n,
-                "parts_total": total, "saved_s": round(saved_s, 3),
-                "full": full}) + "\n")
+            f.write(json.dumps(rec) + "\n")
     except OSError:
         pass
 
@@ -314,11 +318,20 @@ def _prefix_try_serve(cache_dir: str, cmd: str, cwd: str):
     out, err = [], []
     saved, n, last_exit = 0.0, 0, 0
     total = len(parts)
+    stop_reason, stop_part = None, None
     for i, (text, stop_on_fail, servable) in enumerate(parts):
         if not servable or is_state_cmd(text) or is_cd_cmd(text):
+            stop_reason = ("hazard" if not servable else
+                           "state_cmd" if is_state_cmd(text) else "cd_cmd")
+            stop_part = text[:120]
             break                         # ends the servable prefix
         entry = spec_cache_lookup(cache_dir, text, eff_cwd, log=False)
         if entry is None:
+            k = hashlib.sha256(f"{eff_cwd}\x00{text}".encode()).hexdigest()
+            stop_reason = ("invalid_entry"          # exists, failed validation
+                           if (Path(cache_dir) / f"{k}.json").exists()
+                           else "no_entry")
+            stop_part = text[:120]
             break
         ex = entry.get("exit", 1)
         if ex != 0 and stop_on_fail and i < total - 1:
@@ -339,14 +352,25 @@ def _prefix_try_serve(cache_dir: str, cmd: str, cwd: str):
         saved += entry.get("duration_s") or 0.0
         n, last_exit = i + 1, ex
     if n == 0:
+        try:                              # attempt died on part 0: say why
+            with open(Path(cache_dir) / "serve_decisions.jsonl", "a") as f:
+                f.write(json.dumps({
+                    "ts": time.time(), "cmd": cmd[:300],
+                    "decision": "prefix_attempt", "parts_total": total,
+                    "parts_served": 0, "stop_reason": stop_reason,
+                    "stop_part": stop_part}) + "\n")
+        except OSError:
+            pass
         return None
     if n == total:
         return {"remainder": None, "cwd": eff_cwd, "stdout": "".join(out),
                 "stderr": "".join(err), "exit": last_exit, "n": n,
-                "total": total, "saved_s": saved}
+                "total": total, "saved_s": saved,
+                "stop_reason": stop_reason, "stop_part": stop_part}
     return {"remainder": rejoin(parts[n:]), "cwd": eff_cwd,
             "stdout": "".join(out), "stderr": "".join(err), "exit": None,
-            "n": n, "total": total, "saved_s": saved}
+            "n": n, "total": total, "saved_s": saved,
+            "stop_reason": stop_reason, "stop_part": stop_part}
 
 
 # ------------------------------------------------- spec cache: in-flight join
@@ -363,7 +387,12 @@ def _join_inflight(cache_dir: str, key: str) -> float:
     max_age = float(os.environ.get("SPEC_JOIN_MAX_AGE", "300"))
     if time.time() - float(info.get("ts", 0)) > max_age:
         return 0.0                       # crashed/abandoned writer: ignore
-    wait_max = float(os.environ.get("SPEC_JOIN_MAX_WAIT", "8"))
+    mgen = info.get("gen")
+    if mgen is not None:                 # doomed join: the writer started
+        cur = _current_generation(cache_dir)   # under an older generation;
+        if cur is not None and str(mgen) != str(cur):   # its entry cannot
+            return 0.0                   # validate -- waiting is pure waste
+    wait_max = float(os.environ.get("SPEC_JOIN_MAX_WAIT", "2"))
     t0 = time.time()
     while time.time() - t0 < wait_max:
         if p.exists():
@@ -566,7 +595,9 @@ class Daemon:
                    "prefix_served": pre["n"], "prefix_total": pre["total"],
                    "spec_saved_s": round(pre["saved_s"], 3)}
             _log_prefix_decision(self.args.spec_cache, cmd, pre["n"],
-                                 pre["total"], pre["saved_s"], full=True)
+                                 pre["total"], pre["saved_s"], full=True,
+                                 stop_reason=pre.get("stop_reason"),
+                                 stop_part=pre.get("stop_part"))
             self._record(cmd, cwd, res)
             return res
         if pre is not None:                                # partial prefix
@@ -601,7 +632,9 @@ class Daemon:
             res["spec_saved_s"] = round(pre["saved_s"], 3)
             self.stats["prefix_serves"] = self.stats.get("prefix_serves", 0) + 1
             _log_prefix_decision(self.args.spec_cache, cmd, pre["n"],
-                                 pre["total"], pre["saved_s"], full=False)
+                                 pre["total"], pre["saved_s"], full=False,
+                                 stop_reason=pre.get("stop_reason"),
+                                 stop_part=pre.get("stop_part"))
         if near:
             res["near_miss"] = near
         self.stats["commands"] += 1
