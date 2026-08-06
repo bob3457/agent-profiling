@@ -1,0 +1,16 @@
+swebench	astropy__astropy-12907
+swebench	astropy__astropy-13236
+swebench	django__django-10973
+terminalbench	analyze-access-logs
+terminalbench	count-dataset-tokens
+terminalbench	cprofiling-python
+hotpotqa	5a8b57f25542995d1e6f1371
+hotpotqa	5a8c7595554299585d9e36b6
+hotpotqa	5a85ea095542994775f606a8
+hotpotqa	5adbf0a255429947ff17385a
+hotpotqa	5a8e3ea95542995a26add48d
+freshqa	fresh0000
+freshqa	fresh0001
+freshqa	fresh0002
+freshqa	fresh0003
+freshqa	fresh0004

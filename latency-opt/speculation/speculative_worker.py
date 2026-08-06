@@ -113,10 +113,19 @@ def cache_put(cache_dir: Path, cwd: str, cmd: str, proc, fingerprint: str):
 
 
 # ------------------------------------------------------------ in-flight marks
+def _marker_generation(cache_dir: Path):
+    try:
+        return (Path(cache_dir) / "GENERATION").read_text().strip()
+    except OSError:
+        return None
+
+
 def _mark_inflight(cache_dir: Path, key: str, cmd: str):
     try:
         (cache_dir / f"{key}.inflight").write_text(
-            json.dumps({"ts": time.time(), "pid": os.getpid(), "cmd": cmd[:200]}))
+            json.dumps({"ts": time.time(), "pid": os.getpid(),
+                        "cmd": cmd[:200],
+                        "gen": _marker_generation(cache_dir)}))
     except OSError:
         pass
 
@@ -542,6 +551,12 @@ def main():
             print(f"[spec] unknown action {name!r}, skipping")
             continue
         for cmd, cacheable in fn(ws, ctx):
+            # key normalization: cwd==ws, so a literal $PWD is the
+            # workspace path; expanding it makes the cached key match
+            # the agent's expanded command (measured lost race:
+            # django-10973 runtests, entry landed 2s late on the raw
+            # string while the expanded twin ran live)
+            cmd = cmd.replace("${PWD}", str(ws)).replace("$PWD", str(ws))
             ikey = None
             if cacheable == "family":
                 from spec_families import family_key

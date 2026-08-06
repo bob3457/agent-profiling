@@ -161,7 +161,8 @@ run_one() {  # $1 bench, $2 task_id
           --ledger-dir "${LEDGER_DIR:-$ROOT/latency-opt/ledger}" \
           $PS_ARG > "$run_dir/spec.log" 2>&1 &
       echo $! > "$run_dir/spec.pid"
-      nohup python3 -u "$OPT/speculation/edit_respec.py" \
+      SPEC_CPU_TAG=respec nohup python3 -u "$OPT/speculation/edit_respec.py" \
+        --parallel "${SPEC_RESPEC_PARALLEL:-2}" --max-per-gen "${SPEC_MAX_PER_GEN:-8}" \
         --workspace "$workdir" --cache-dir "$CODEX_SHELLD_SPEC" \
         --spec-log "$run_dir/spec.log" \
         --commands-log "$run_dir/shelld_logs/commands.jsonl" \
