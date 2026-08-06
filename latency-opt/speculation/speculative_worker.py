@@ -26,12 +26,11 @@ Two kinds of speculation, with different commit mechanisms:
    the login-node side before job dispatch, or early in the allocation).
    Misprediction cost: some wasted disk in a cache dir.
 
-The worker deliberately does NOT call an LLM in this version: for SWE-bench /
-Terminal-Bench the high-value prep actions are derivable statically (see
-spec_gate). An LLM-driven speculator (small model predicts the agent's next
-commands from the task text; cf. the speculative-actions literature) plugs in
-by emitting additional entries into the action plan — the execution and
-commit machinery here stays identical.
+Prediction sources: a static action plan (see spec_gate) covers the
+high-value prep actions derivable from the workspace alone; with
+--predictor llm/both, an LLM predictor (llm_predictor.py) reads the task
+text and emits additional plan entries — the execution and commit machinery
+is identical for both sources.
 
 Usage:
     python3 speculative_worker.py --workspace /path/repo \
@@ -493,7 +492,7 @@ def main():
                 "workspace_recon" not in plan:
             plan.insert(0, "workspace_recon")
 
-    # ---- LLM predictor (build 4): merge its commands into the target hints
+    # ---- LLM predictor: merge its commands into the target hints
     if use_llm and ctx.get("problem_statement"):
         from llm_predictor import predict_meta
         llm_cmds, meta = predict_meta(ws, ctx["problem_statement"])

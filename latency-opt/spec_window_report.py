@@ -41,23 +41,29 @@ def analyze(run_dir: Path):
            else f"{run_dir.parent.name}/{name}"}
     respec = next((run_dir / c for c in ("logs/respec.log", "respec.log")
                    if (run_dir / c).exists()), run_dir / "respec.log")
-    bumps, runs, idle_events = [], [], 0
+    # classify each cached run by the most recent log marker: runs after an
+    # "idle:" line are pre/between-edit speculation, runs after an "edit
+    # detected" bump are post-edit re-runs (idle batches also happen at
+    # gen > 0, so the generation number alone cannot distinguish the two)
+    bumps, runs, idle_events, mode = [], [], 0, "idle"
     if respec.exists():
         for ln in respec.read_text(errors="replace").splitlines():
             m = BUMP_RE.search(ln)
             if m:
                 bumps.append((hms_to_s(m.group(1)), int(m.group(2))))
+                mode = "postedit"
             m = RUN_RE.search(ln)
             if m:
                 runs.append({"t": hms_to_s(m.group(1)), "gen": int(m.group(2)),
                              "exit": int(m.group(3)), "dur": float(m.group(4)),
-                             "cmd": m.group(5)})
+                             "cmd": m.group(5), "mode": mode})
             if IDLE_RE.search(ln):
                 idle_events += 1
+                mode = "idle"
     out["gens"] = len(bumps)
     out["idle_events"] = idle_events
-    out["idle_runs"] = sum(1 for r in runs if r["gen"] == 0)
-    out["postedit_runs"] = sum(1 for r in runs if r["gen"] > 0)
+    out["idle_runs"] = sum(1 for r in runs if r["mode"] == "idle")
+    out["postedit_runs"] = sum(1 for r in runs if r["mode"] == "postedit")
     out["spec_cpu_s"] = round(sum(r["dur"] for r in runs), 1)
     dur_by_cmd = {r["cmd"]: r["dur"] for r in runs}
 
@@ -78,6 +84,10 @@ def analyze(run_dir: Path):
             decisions[d] += 1
             q = dt.datetime.fromtimestamp(r["ts"])
             q_s = q.hour * 3600 + q.minute * 60 + q.second + q.microsecond / 1e6
+            # respec.log timestamps are seconds-of-day; a run crossing
+            # midnight makes queries appear earlier than every bump
+            if bumps and q_s + 0.5 < bumps[0][0]:
+                q_s += 86400
             prior = [b for b, _ in bumps if b <= q_s + 0.5]
             if prior and d in ("served", "stale_generation", "prefix_serve"):
                 windows.append(round(q_s - prior[-1], 1))

@@ -5,11 +5,16 @@ anything — the tracked tree already contains every change these produced.
 
 ## patchers/
 
-One-shot anchor-asserting patch scripts from the latency-opt / spec-agnostic
-build iterations. **All of their edits are already applied to the files
-tracked in this repo** — verified by re-running every patcher against a fresh
-checkout: each one reports "already patched" / "no changes" and leaves the
-tree byte-identical.
+One-shot anchor-asserting patch scripts from the latency-opt, spec-agnostic,
+and spec-measure build iterations. **All of their edits are already applied
+to the files tracked in this repo** — verified by re-running every patcher
+against a fresh checkout: each one reports "already patched" / "no changes"
+and leaves the tree byte-identical.
+
+The `spec-measure/` patchers are a partial exception to "do not run": the
+spec-measure smoke tests still apply them to a scratch COPY of the repo (the
+smokes reference them here by path), so keep them runnable. They still must
+not be run against the live tree — they will simply no-op.
 
 They are kept only as a record of what changed and why (their docstrings are
 the changelog). Do not run them against this tree; several will no-op and one

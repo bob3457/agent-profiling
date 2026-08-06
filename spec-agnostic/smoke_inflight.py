@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""smoke_inflight.py — offline acceptance for the in-flight join.
-Run AFTER patch_inflight.py:   python3 smoke_inflight.py [repo_root]
+"""smoke_inflight.py — offline acceptance for the daemon's in-flight join
+(waiting briefly on a speculator that is executing the requested key).
+Run from the repo root:   python3 smoke_inflight.py [repo_root]
 
 1. UNIT (imported sessiond): fresh marker + entry landing mid-wait -> join
    + serve, decisions carry joined_inflight+served; marker without entry ->

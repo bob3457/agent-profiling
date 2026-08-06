@@ -7,7 +7,7 @@
 ROOT=${ROOT:-/projects/kzhou6/czhai/agent-profiling}
 TB_TASKS_DIR=${TB_TASKS_DIR:-$ROOT/runs/terminalbench}     # materialized task dirs
 HOTPOT_MANIFEST=${HOTPOT_MANIFEST:-$(ls $ROOT/manifests/hotpotqa*.tsv 2>/dev/null | head -1)}
-OUT=${OUT:-$ROOT/latency-opt/eval_set.txt}
+OUT=${OUT:-$ROOT/latency-opt/eval_sets/eval_set.txt}
 set -u
 
 : > "$OUT"

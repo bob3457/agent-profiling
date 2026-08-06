@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run_latency_arm.sh <A|B|C> — run the 9-task eval set under one optimization arm.
+# run_latency_arm.sh <A|B|C> — run the eval set under one optimization arm.
 #
 #   A: baseline       (your existing perf wrapper only)
 #   B: persistent     (shell daemon via wrapper; fresh daemon per task)
@@ -12,7 +12,7 @@
 # Assumed layout (override via env):
 #   ROOT              agent-profiling root
 #   OPT               $ROOT/latency-opt (the untarred optimization scripts)
-#   EVAL_SET          $OPT/eval_set.txt          (from gen_eval_set.sh)
+#   EVAL_SET          $OPT/eval_sets/eval_set.txt          (from gen_eval_set.sh)
 #   WS_ROOT           swebench workspaces        (from materialize_swebench_ws.sh)
 #   TB_TASKS_DIR      materialized terminal-bench task dirs
 #   HOTPOT_MANIFEST   hotpotqa manifest tsv (qid<TAB>question ...)
@@ -23,7 +23,7 @@ set -uo pipefail
 ARM=${1:?usage: run_latency_arm.sh A|B|C}
 ROOT=${ROOT:-/projects/kzhou6/czhai/agent-profiling}
 OPT=${OPT:-$ROOT/latency-opt}
-EVAL_SET=${EVAL_SET:-$OPT/eval_set.txt}
+EVAL_SET=${EVAL_SET:-$OPT/eval_sets/eval_set.txt}
 WS_ROOT=${WS_ROOT:-/scratch/czhai/latency-eval/workspaces}
 TB_TASKS_DIR=${TB_TASKS_DIR:-$ROOT/runs/terminalbench}
 HOTPOT_MANIFEST=${HOTPOT_MANIFEST:-$(ls $ROOT/manifests/hotpotqa*.tsv 2>/dev/null | head -1)}

@@ -32,11 +32,10 @@ decomposer cross-check on the dirs the suite itself produces. 23 checks.
 
     python3 spec-analysis/stress_inflight.py $ROOT    # expect ALL PASS (23)
 
-## Known telemetry gap (measured by S2, not yet patched)
+## Join-then-invalid waits
 
 When a join wait resolves into an entry that then FAILS validation
-(stale generation/fingerprint), sessiond logs only the miss reason — the
-`joined_inflight` line is written on the success path only, and no timeout
-fires because the entry did land. That wait is currently invisible waste in
-the decisions log. One-line fix if it matters at sweep scale: include
-`waited_s` in the miss record inside `spec_cache_lookup`.
+(stale generation/fingerprint), no `joined_inflight` line is written (that
+is the success path) and no timeout fires because the entry did land.
+sessiond stamps `waited_s` on the miss record for this case, and
+decompose_serves counts it in the waste bucket.

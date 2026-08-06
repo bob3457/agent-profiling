@@ -9,11 +9,13 @@ on GMU HPC (x86 Hopper nodes and the GH200 aarch64 node).
 |---|---|
 | `scripts/` | baseline CPU deep-dive pipeline: codex-from-source setup, shell.rs perf-wrapper patcher, per-tool perf runners, batch runner, analyzer, benchmark task materializers (Terminal-Bench, SWE-bench arm25, HotpotQA, FreshQA) |
 | `codex_hooks/` | Pre/PostToolUse/Stop hook script + `hooks.json` |
-| `latency-opt/` | the optimization arms: persistent shell daemon (`scripts/shell_sessiond.py` + wrapper), gated speculative execution (`speculation/`), 3-arm harness (`harness/run_latency_arm.sh`, `harness/run_option_b.sh`), arm comparison and window reports. See `latency-opt/README.md` |
-| `spec-agnostic/` | task-agnostic speculator iteration: corpus coverage tool, smoke tests. See `spec-agnostic/NOTES.md` |
+| `latency-opt/` | the optimization arms: persistent shell daemon (`scripts/shell_sessiond.py` + wrapper), gated speculative execution (`speculation/`), 3-arm harness (`harness/run_latency_arm.sh`, `harness/run_option_b.sh`), eval sets (`eval_sets/`), arm comparison and window reports. See `latency-opt/README.md` |
+| `spec-agnostic/` | task-agnostic speculator: corpus coverage tool, smoke tests. See `spec-agnostic/NOTES.md` |
+| `spec-analysis/` | ground-truth analysis of speculation runs: serve decomposition, miss autopsy, ceiling report, task selection, in-flight stress probes. See `spec-analysis/README.md` |
+| `spec-measure/` | the four-measurement campaign (gate accuracy, prediction volume, seconds saved, CPU/token cost): report generator + smoke tests. See `spec-measure/README.md` |
 | `manifests/` | which benchmark instances each study ran (tiny, provenance) |
 | `prompts/` | exact prompts sent to the agent (`tbench_*` = the 10 dummy CPU-study tasks; `tb_*` = bare-metal Terminal-Bench materializations; `swe_*`, `hotpot_*`, `fresh_*`) |
-| `archive/` | already-applied one-shot patchers and old coverage outputs — historical only, see `archive/README.md` |
+| `archive/` | already-applied one-shot patchers (latency-opt, spec-agnostic, spec-measure) and old coverage outputs — historical only, see `archive/README.md` |
 | `env.sh` | GH200 (aarch64) environment profile — ARM PMU event names; x86 values are in the section below |
 
 Self-tests (all runnable offline from the repo root with `ROOT=$PWD`):

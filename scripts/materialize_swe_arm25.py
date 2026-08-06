@@ -1,3 +1,11 @@
+#!/usr/bin/env python3
+"""Materialize the 25-instance SWE-bench arm study: clone/checkout each
+instance's repo at its base commit into runs/swebench-arm/<iid>/base_task
+(via a shared per-repo cache), write prompts/swe_<iid>.txt from the
+SWE-bench_Verified problem statement, and append to
+manifests/swebench_arm25.tsv. Instance list comes from Agent-Bench's
+configs/instances_arm25.txt. Run on a login node (needs network).
+"""
 import shutil, subprocess
 from pathlib import Path
 from datasets import load_dataset

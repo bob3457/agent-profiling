@@ -49,13 +49,13 @@ ROOT.mkdir()
 shutil.copytree(SRC / "latency-opt", ROOT / "latency-opt", symlinks=True,
                 ignore=shutil.ignore_patterns("ledger", "__pycache__"))
 
-r1 = subprocess.run([PY, str(HERE / "patch_prefix_telemetry.py"), str(ROOT)],
+r1 = subprocess.run([PY, str(HERE.parent / "archive" / "patchers" / "spec-measure" / "patch_prefix_telemetry.py"), str(ROOT)],
                     capture_output=True, text=True)
 check("T1 patch applies (or already applied)", r1.returncode == 0
       and ("applied: ['reason tracking" in r1.stdout
            or "already present: ['reason tracking" in r1.stdout),
       r1.stdout[-300:] + r1.stderr[-300:])
-r2 = subprocess.run([PY, str(HERE / "patch_prefix_telemetry.py"), str(ROOT)],
+r2 = subprocess.run([PY, str(HERE.parent / "archive" / "patchers" / "spec-measure" / "patch_prefix_telemetry.py"), str(ROOT)],
                     capture_output=True, text=True)
 check("T1 idempotent", "applied: []" in r2.stdout, r2.stdout[-200:])
 check("T1 compiles", subprocess.run(

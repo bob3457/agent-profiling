@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""llm_predictor.py — LLM-based first-command prediction (build 4).
+"""llm_predictor.py — LLM-based first-command prediction.
 
 Predicts the first test invocation(s) an agent will run for a task, by
 asking a cheap model (codex-low by default) to read the same problem

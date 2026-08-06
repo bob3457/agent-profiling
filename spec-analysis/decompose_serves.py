@@ -12,7 +12,9 @@ this tool turns it into the per-category breakdown:
   prefix_full     whole compound from parts    saved = record's saved_s
   prefix_partial  leading parts only           saved = record's saved_s
   misses          no_entry / stale_generation / stale_fingerprint /
-                  generation_file_missing / inflight_timeout (wasted wait s)
+                  generation_file_missing / inflight_timeout (wasted wait s);
+                  a validation-miss record carrying waited_s (join resolved
+                  into an entry that failed validation) counts as waste too
 
 Dedup rule: a successful join logs TWO lines (joined_inflight then served,
 same cmd, back-to-back). The pair is ONE serve event, category "joined".
@@ -156,6 +158,12 @@ def analyze(run_dir: Path):
         base = decision.split("(")[0]
         if base in MISS_KINDS:
             r["misses"][base] += 1
+            # a join wait that resolved into an entry that failed validation
+            # (sessiond stamps waited_s on the miss record): pure waste
+            w = d.get("waited_s") or 0.0
+            if w:
+                r["timeouts"] += 1
+                r["timeout_wasted"] += w
     if pending_join is not None:
         r["warnings"].append("trailing joined_inflight without served")
 

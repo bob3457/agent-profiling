@@ -41,13 +41,13 @@ ROOT.mkdir(parents=True)
 shutil.copytree(SRC / "latency-opt", ROOT / "latency-opt", symlinks=True,
                 ignore=shutil.ignore_patterns("ledger", "__pycache__"))
 
-r1 = subprocess.run([PY, str(HERE / "patch_respec_killtree.py"), str(ROOT)],
+r1 = subprocess.run([PY, str(HERE.parent / "archive" / "patchers" / "spec-measure" / "patch_respec_killtree.py"), str(ROOT)],
                     capture_output=True, text=True)
 check("K1 patch applies (or already applied)", r1.returncode == 0
       and ("applied: ['tree-kill" in r1.stdout
            or "already present: ['tree-kill" in r1.stdout),
       r1.stdout[-300:] + r1.stderr[-300:])
-r2 = subprocess.run([PY, str(HERE / "patch_respec_killtree.py"), str(ROOT)],
+r2 = subprocess.run([PY, str(HERE.parent / "archive" / "patchers" / "spec-measure" / "patch_respec_killtree.py"), str(ROOT)],
                     capture_output=True, text=True)
 check("K1 idempotent", "applied: []" in r2.stdout, r2.stdout[-200:])
 check("K1 compiles", subprocess.run(

@@ -6,7 +6,13 @@ Answers, per benchmark (swebench, terminalbench, hotpotqa, freshqa):
   3. how much time an accepted prediction saves (by serve category)
   4. what it costs: extra CPU vs the agent's own CPU, and extra tokens
 
-Depends on spec-analysis/ (decompose_serves.py) being untarred alongside.
+Depends on spec-analysis/decompose_serves.py.
+
+The instrumentation this campaign needs (shadow gate, CPU rusage dumps,
+gate token capture, freshqa harness case) is already applied to the
+tracked tree; the one-shot patchers that applied it live in
+`archive/patchers/spec-measure/`. The smoke tests below still exercise
+them against a scratch copy of the repo.
 
 ## Why a patch is needed at all
 
@@ -18,10 +24,8 @@ scorable against realized value. Likewise CPU (components die by SIGTERM
 with no rusage record) and gate tokens (plain `codex exec`, usage
 discarded) need capture points added.
 
-## Deploy
+## Verify
 
-    cd $ROOT && tar xzf /scratch/czhai/spec-measure.tar.gz
-    python3 spec-measure/patch_measure.py $ROOT
     python3 spec-measure/smoke_measure.py $ROOT     # expect ALL PASS (21)
 
 ## Run the campaign (arm C, shadow gate, speculation on all four benches)
@@ -30,7 +34,7 @@ discarded) need capture points added.
     # freshqa needs manifests/freshqa_cpu_study_*.tsv
     # (scripts/materialize_freshqa_cpu_tasks.py)
     SPEC_GATE_SHADOW=1 SPEC_ALL_BENCH=1 \
-      EVAL_SET=$OPT/eval_set_4bench.txt \
+      EVAL_SET=$OPT/eval_sets/eval_set_4bench.txt \
       bash $ROOT/latency-opt/harness/run_latency_arm.sh C
 
 ## Report

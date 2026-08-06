@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ledger.py — persistent prediction ledger (build 4).
+"""ledger.py — persistent prediction ledger.
 
 The memory that turns speculation from a reflex into a decision. Records
 every prediction; later joins each with what the agent actually ran; keeps

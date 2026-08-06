@@ -12,7 +12,7 @@ Usage:
   python3 select_tasks.py --results '/scratch/czhai/latency-eval/results' \\
       --swe 10 --tb 10 --hotpot 3 --freshqa 3 \\
       --tb-tasks-dir $ROOT/runs/terminalbench-arm \\
-      --out $OPT/eval_set_26.txt
+      --out $OPT/eval_sets/eval_set_26.txt
 """
 import argparse
 import json

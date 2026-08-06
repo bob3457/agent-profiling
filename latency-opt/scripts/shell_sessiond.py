@@ -41,6 +41,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import signal
 import socketserver
 import subprocess
@@ -201,6 +202,15 @@ class ShellSession:
             os.killpg(self.proc.pid, signal.SIGKILL)
         except (ProcessLookupError, OSError):
             pass
+        # a reader thread may still be blocked in open() on the control fifo
+        # (timeout path: no writer will ever arrive); a momentary non-blocking
+        # write-open releases it so the thread can exit
+        try:
+            fd = os.open(self.ctl_fifo, os.O_WRONLY | os.O_NONBLOCK)
+            os.close(fd)
+        except OSError:
+            pass
+        shutil.rmtree(self.ctl_dir, ignore_errors=True)
 
 
 def shq(s: str) -> str:
@@ -255,11 +265,14 @@ def _spec_entry_invalid(cache_dir: str, entry: dict, cwd: str):
     return None
 
 
-def _log_serve_decision(cache_dir: str, cmd: str, key, decision: str, entry):
+def _log_serve_decision(cache_dir: str, cmd: str, key, decision: str, entry,
+                        waited_s=None):
     try:
         rec = {"ts": time.time(), "cmd": cmd[:300],
                "key": ("exact" if key and not str(key).startswith("fam_")
                        else key), "decision": decision}
+        if waited_s:                     # join wait spent before this outcome
+            rec["waited_s"] = round(waited_s, 3)
         if entry is not None:
             rec["entry_cmd"] = entry.get("cmd", "")[:300]
             rec["entry_exit"] = entry.get("exit")
@@ -443,7 +456,12 @@ def spec_cache_lookup(cache_dir: str, cmd: str, cwd: str, log: bool = True,
         reason = _spec_entry_invalid(cache_dir, entry, cwd)
         if reason:
             if log:
-                _log_serve_decision(cache_dir, cmd, key, reason, entry)
+                # a join wait that resolved into an entry that then failed
+                # validation is pure waste; carry it on the miss record so
+                # the decisions log stays the ground truth for wait time
+                _log_serve_decision(cache_dir, cmd, key, reason, entry,
+                                    waited_s=(waited if key == keys[0]
+                                              else None))
             continue
         if log:
             if waited and key == keys[0]:
@@ -622,6 +640,7 @@ class Daemon:
             with self.sessions_lock:
                 if self.sessions.get(key) is session:
                     del self.sessions[key]
+            session.close()              # reap fifo reader + temp dir
         res["cached"] = False
         res["session_reused"] = reused
         if pre is not None:                # splice served prefix into reply

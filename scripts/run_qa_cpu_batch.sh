@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # Generalized QA profiling batch (hotpotqa, freshqa, ...) with resume.
-# Supersedes run_hotpot_cpu_batch.sh (which hardcoded BENCHMARK=hotpotqa).
 # Usage:
 #   bash scripts/run_qa_cpu_batch.sh hotpotqa manifests/hotpotqa_cpu_study_10.tsv [ITER]
 #   bash scripts/run_qa_cpu_batch.sh freshqa  manifests/freshqa_cpu_study_10.tsv  [ITER]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""llm_gate.py (v2) — LLM speculation gate on TWO signals: the problem
+"""llm_gate.py — LLM speculation gate on TWO signals: the problem
 statement and the FIRST INFORMATION THE AGENT EMITS -- its opening
 reasoning/output snippet from the codex --json event stream, which arrives
 seconds before any command and exists even on trajectories that never run

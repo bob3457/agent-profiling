@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""spec_tiers.py — command safety classification for general speculation (v2.1).
+"""spec_tiers.py — command safety classification for general speculation.
 
-v2 goal: task-agnostic coverage. classify(cmd) is a property of the COMMAND
+Task-agnostic by design: classify(cmd) is a property of the COMMAND
 (shell semantics), never of the benchmark. Returns one of:
 
   TIER0  pre-run in place, servable. Deterministic-given-filesystem-state
@@ -19,24 +19,25 @@ Conservative by construction: unknown commands are NONE. Shell operators
 (&&, |, ;, redirects, substitution, newlines) are NONE at THIS layer —
 compound decomposition is spec_compound's job; consumers classify the parts.
 
-v2 changes vs v1 (all validated in the self-test):
-  * ~40 new pure heads (sort/uniq/cut/tr/jq/od/xxd/strings/nl/tac/...).
+Coverage (all validated in the self-test):
+  * Pure heads: file/text readers plus stream tools (sort/uniq/cut/tr/jq/
+    od/xxd/strings/nl/tac/...).
   * Guarded heads: sed (no -i/-f, no w/W/e script commands), awk (no -f,
     no -i inplace, no system()), tar (list/diff modes only), unzip/gzip/xz/
     bzip2 (list/test/stdout modes), sqlite3 (single read-only statement),
-    pip (list/show/freeze/check), python -m pip, extra safe -m modules.
+    pip (list/show/freeze/check), python -m pip, safe -m modules, and git
+    restricted to read-only invocations (`git branch <name>` creates,
+    `git remote add` mutates — both refused).
   * Generic probe rule: `<tool> --version|--help|-V|-h|version` is TIER0
     for ANY head (pure by convention across the ecosystem).
-  * v2.1: pure PIPELINES (every stage TIER0 -> TIER0), safe redirects
+  * Pure PIPELINES (every stage TIER0 -> TIER0), safe redirects
     (>/dev/null, 2>/dev/null, 2>&1 stripped before hazard scan), leading
     NAME=value / `command` prefixes stripped (`command -v` pure; bare
     assignments are shell state -> NONE; `time` stays NONE: a cached
     timing is a wrong answer).
-  * SAFETY FIXES over v1: `git branch <name>` (creates!), `git remote add`
-    (mutates!) were TIER0 in v1 — now guarded to read-only invocations.
-    `date` was TIER0 in v1 — now NONE (time-varying: a cached timestamp is
-    a wrong answer). `sleep` explicitly NONE (serving it instantly destroys
-    the delay the agent asked for).
+  * Time-varying commands are NONE even when harmless: `date` (a cached
+    timestamp is a wrong answer), `sleep` (serving it instantly destroys
+    the delay the agent asked for), `ps`, etc.
 """
 import re
 import shlex
@@ -47,7 +48,7 @@ _OPERATORS = ("&&", "||", ";", "|", ">", "<", "`", "$(", "\n")  # kept for refer
 
 
 def _has_shell_hazard(cmd: str) -> bool:
-    """Quote-aware operator scan (v2). Operators inside single quotes are
+    """Quote-aware operator scan. Operators inside single quotes are
     literal; inside double quotes only ` and $( remain live (command
     substitution). Newlines refuse anywhere. Backslash escapes honored
     outside single quotes."""
@@ -85,23 +86,23 @@ def _has_shell_hazard(cmd: str) -> bool:
 
 # verbs whose invocations are read-only AND deterministic given fs state
 _TIER0_HEADS = {
-    # v1 set (minus date — time-varying, see module docstring)
+    # core file/repo readers (no date — time-varying, see module docstring)
     "ls", "cat", "head", "tail", "wc", "grep", "rg", "find", "stat", "file",
     "which", "env", "printenv", "pwd", "du", "df", "echo", "true",
     "diff", "md5sum", "sha256sum", "readlink", "tree", "nproc", "uname",
     "pytest",
-    # v2: text/stream tools (pure filters; fs writes require operators,
+    # text/stream tools (pure filters; fs writes require operators,
     # which are refused upstream)
     "sort", "uniq", "cut", "tr", "paste", "comm", "join", "nl", "tac",
     "rev", "fold", "fmt", "expand", "unexpand", "column", "seq", "printf",
     "basename", "dirname", "realpath", "cmp", "sha1sum", "sha512sum",
     "b2sum", "cksum", "sum", "hexdump", "od", "xxd", "strings", "shuf",
-    # v2: structured-data / search tools
+    # structured-data / search tools
     "jq", "yq", "fd", "ag", "ack",
-    # v2: system identity probes (static per node/allocation)
+    # system identity probes (static per node/allocation)
     "hostname", "whoami", "id", "groups", "arch", "lscpu", "getconf",
     "false", "type", "test", "[",
-    # v2: archive readers (pure by design)
+    # archive readers (pure by design)
     "zcat", "bzcat", "xzcat", "zipinfo",
 }
 # time-varying or interactive: harmless but WRONG to serve from cache
@@ -240,7 +241,7 @@ def _classify_sqlite(toks):
     return TIER0
 
 
-# ---- v2.1: pure pipelines, safe redirects, env/command prefixes ----------
+# ---- pure pipelines, safe redirects, env/command prefixes ----------------
 # Redirects that cannot touch the workspace: discarding to /dev/null and
 # fd merges. Stripped (outside quotes) before hazard scanning a stage.
 _SAFE_REDIR = re.compile(r"(?:^|\s)(?:[012&]?>>?\s*/dev/null|2>&1|1>&2)(?=\s|$)")
@@ -349,14 +350,14 @@ def _classify_simple(cmd: str) -> str:
         if toks[1] in _TIER0_GIT:
             return TIER0
         if toks[1] == "branch":
-            # SAFETY FIX vs v1: `git branch foo` CREATES a branch.
+            # SAFETY: `git branch foo` CREATES a branch.
             if any(t in _GIT_BRANCH_MUTATORS for t in toks[2:]):
                 return NONE
             if any(not t.startswith("-") for t in toks[2:]):
                 return NONE
             return TIER0
         if toks[1] == "remote":
-            # SAFETY FIX vs v1: `git remote add/rm/set-url` mutate.
+            # SAFETY: `git remote add/rm/set-url` mutate.
             if len(toks) == 2 or toks[2] in ("-v", "show", "get-url"):
                 return TIER0
             return NONE
@@ -411,7 +412,7 @@ def created_paths(cmd: str):
 
 if __name__ == "__main__":
     cases = [
-        # ---- v1 suite (behavior preserved except documented safety fixes)
+        # ---- core heads
         ("python -m pytest astropy/coordinates/tests/test_x.py -q", TIER0),
         ("python tests/runtests.py httpwrappers --verbosity 1", TIER0),
         ("git status", TIER0),
@@ -429,7 +430,7 @@ if __name__ == "__main__":
         ("python - <<'PY'\nprint(1)\nPY", NONE),
         ("python -m pytest a.py -k 'cds'", TIER0),
         ("tee /output/graded_result.txt", NONE),
-        # ---- v2: new pure heads
+        # ---- text/stream pure heads
         ("sort -u data.txt", TIER0),
         ("uniq -c sorted.txt", TIER0),
         ("cut -d, -f2 data.csv", TIER0),
@@ -442,7 +443,7 @@ if __name__ == "__main__":
         ("wc -l data.csv", TIER0),
         ("realpath ./x", TIER0),
         ("column -t -s, data.csv", TIER0),
-        # ---- v2: generic probe rule
+        # ---- generic probe rule
         ("node --version", TIER0),
         ("gcc --version", TIER0),
         ("cargo --help", TIER0),
@@ -450,7 +451,7 @@ if __name__ == "__main__":
         ("terraform -h", TIER0),
         ("rm --help", TIER0),          # pure: prints usage, touches nothing
         ("node -e 'x'", NONE),          # probe rule is exactly-2-tokens only
-        # ---- v2: guarded sed/awk
+        # ---- guarded sed/awk
         ("sed -n 5,10p file.txt", TIER0),
         ("sed s/foo/bar/ file.txt", TIER0),       # stdout only, no -i
         ("sed -i s/foo/bar/ file.txt", NONE),
@@ -464,7 +465,7 @@ if __name__ == "__main__":
         ("awk 'BEGIN{system(\"rm x\")}'", NONE),
         ("awk -f prog.awk data", NONE),
         ("gawk -i inplace '{sub(/a/,\"b\")}1' f", NONE),
-        # ---- v2: archives
+        # ---- archives
         ("tar tzf release.tar.gz", TIER0),
         ("tar -tvf a.tar", TIER0),
         ("tar --list -f a.tar", TIER0),
@@ -479,7 +480,7 @@ if __name__ == "__main__":
         ("gunzip data.gz", NONE),
         ("gunzip -c data.gz", TIER0),
         ("xz -t archive.xz", TIER0),
-        # ---- v2: sqlite / pip / python -m
+        # ---- sqlite / pip / python -m
         ("sqlite3 app.db 'select count(*) from users'", TIER0),
         ("sqlite3 -header -csv app.db 'SELECT * FROM t'", TIER0),
         ("sqlite3 app.db '.schema users'", TIER0),
@@ -497,14 +498,14 @@ if __name__ == "__main__":
         ("python -m json.tool cfg.json", TIER0),
         ("python -m platform", TIER0),
         ("python -c 'import os; os.remove(\"x\")'", NONE),
-        # ---- v2: git guards (safety fixes)
+        # ---- git guards
         ("git branch", TIER0),
         ("git branch -a", TIER0),
-        ("git branch new-feature", NONE),          # v1 said TIER0: creates!
+        ("git branch new-feature", NONE),          # creates a branch
         ("git branch -D main", NONE),
         ("git remote -v", TIER0),
         ("git remote", TIER0),
-        ("git remote add origin http://x", NONE),  # v1 said TIER0: mutates!
+        ("git remote add origin http://x", NONE),  # mutates remotes
         ("git stash list", TIER0),
         ("git stash", NONE),
         ("git tag", TIER0),
@@ -515,14 +516,14 @@ if __name__ == "__main__":
         ("git config user.name Bob", NONE),
         ("git ls-tree HEAD", TIER0),
         ("git cat-file -p HEAD:setup.py", TIER0),
-        # ---- v2: time-varying refusals (correctness, not safety)
+        # ---- time-varying refusals (correctness, not safety)
         ("date", NONE),
         ("date +%s", NONE),
         ("sleep 5", NONE),
         ("ps aux", NONE),
         ("free -h", NONE),
         ("mktemp -d", NONE),
-        # ---- v2: quote-aware hazard scan
+        # ---- quote-aware hazard scan
         ("sed 's|a|b|g' f", TIER0),               # quoted | is literal
         ("grep -E 'foo|bar' src.py", TIER0),
         ("awk -F'|' '{print $1}' d.txt", TIER0),
@@ -534,7 +535,7 @@ if __name__ == "__main__":
         ("cat 'f; rm x'", TIER0),
         ("cat f &", NONE),
         ("cat 'unterminated", NONE),
-        # ---- v2.1: pure pipelines
+        # ---- pure pipelines
         ("grep -rn 'def solve' . | head -20", TIER0),
         ("git log --oneline | head -5", TIER0),
         ("sort data.txt | uniq -c", TIER0),
@@ -544,13 +545,13 @@ if __name__ == "__main__":
         ("ps aux | grep python", NONE),           # time-varying stage
         ("echo hi || rm -rf /", NONE),            # || is not a pipeline
         ("mkdir -p a | cat", NONE),               # tier1 stage: refuse
-        # ---- v2.1: safe redirects
+        # ---- safe redirects
         ("find / -name x 2>/dev/null", TIER0),
         ("grep -r pat . 2>/dev/null | head -5", TIER0),
         ("python -m pytest -q 2>&1", TIER0),
         ("ls > files.txt", NONE),
         ("cat f 2>> log.txt", NONE),
-        # ---- v2.1: env/command prefixes
+        # ---- env/command prefixes
         ("PYTHONPATH=. python -m pytest tests/test_a.py -q", TIER0),
         ("PYTHONPATH=. python setup.py install", NONE),
         ("FOO=bar rm -rf x", NONE),

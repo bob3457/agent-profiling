@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Trajectory-aware speculation watcher (build 11: compound decomposition).
+"""edit_respec.py — trajectory-aware speculation watcher.
 
-Two speculation modes in one process, per the Speculative Actions framing
-(draft signal = the agent's own live trajectory):
+Watches a live agent run and keeps the speculation cache fresh across
+workspace edits. Two speculation modes in one process, using the agent's
+own live trajectory as the prediction signal:
 
-  PRE-EDIT (v7 revived): while the tree is unedited, tail the agent's
-  executed commands (shelld commands.jsonl) and its event stream
-  (stdout.jsonl, reasoning text leaks test paths before execution). New
-  test-like candidates are pre-run at the CURRENT generation -- correctly
-  scoped: servable exactly until the first edit.
+  PRE-EDIT: while the tree is unedited, tail the agent's executed commands
+  (shelld commands.jsonl) and its event stream (stdout.jsonl, reasoning
+  text leaks test paths before execution). New test-like candidates are
+  pre-run at the CURRENT generation -- correctly scoped: servable exactly
+  until the first edit.
 
-  POST-EDIT (v8): on any workspace edit, bump GENERATION first, then re-run
+  POST-EDIT: on any workspace edit, bump GENERATION first, then re-run
   the candidate union against the patched tree, trajectory-first. The
   agent's own pre-edit probe is the top candidate -- agents re-verify what
   they probed, so this is a near-guaranteed key match post-edit.
@@ -29,8 +30,8 @@ WHAT IT DOES
      excluding volatile tool caches). Unlike the top-2-level fingerprint in
      shell_sessiond, this SEES in-place content edits below depth 2 and is
      NOT tripped by top-level side-effect churn alone (churn dirs excluded).
-  2. Publishes a GENERATION token file in the cache dir. The daemon (after
-     patch_sessiond.py) validates generation-stamped entries against this
+  2. Publishes a GENERATION token file in the cache dir. The daemon
+     (shell_sessiond.py) validates generation-stamped entries against this
      file in O(1) -- no scanning on the serve path.
   3. On workspace change: bump GENERATION FIRST (instantly invalidating the
      old generation -- no unsafe window), then re-run the predictor's
@@ -48,9 +49,8 @@ container context -- right after the worker launch line:
       --spec-log "$run_dir/spec.log" >> "$run_dir/respec.log" 2>&1 &
   RESPEC_PID=$!
 
-and make sure the harness teardown kills it (same pkill that should already
-be reaping the worker -- this is also the fuse-overlayfs timeout fix).
-patch_harness.py does both automatically.
+and make sure the harness teardown kills it (run_latency_arm.sh does both:
+launch and teardown).
 """
 
 import argparse
@@ -408,10 +408,14 @@ def main():
                     help="concurrent speculative runs; fuse-overlayfs is "
                          "near-single-threaded for I/O, keep modest")
     ap.add_argument("--max-per-gen", type=int, default=16)
-    ap.add_argument("--enumerate-nodes", action="store_true", default=True,
+    ap.add_argument("--enumerate-nodes", dest="enumerate_nodes",
+                    action="store_true", default=True,
                     help="pytest --collect-only the top candidate files and "
                          "speculate node-level variants (fixes node-key "
-                         "first-use misses)")
+                         "first-use misses; default on)")
+    ap.add_argument("--no-enumerate-nodes", dest="enumerate_nodes",
+                    action="store_false",
+                    help="disable node-level enumeration")
     ap.add_argument("--poll", type=float, default=1.0)
     ap.add_argument("--max-generations", type=int, default=5)
     ap.add_argument("--cmd-timeout", type=int, default=CMD_TIMEOUT)
@@ -422,7 +426,6 @@ def main():
     if _cpu_out:
         import atexit
         import resource
-        import signal as _sig
         _cpu_t0 = time.time()
 
         def _dump_cpu(*_a):
@@ -443,11 +446,10 @@ def main():
                     json.dump(rec, f)
             except OSError:
                 pass
-            if _a:                      # SIGTERM path: dump then die
-                os._exit(0)
 
+        # SIGTERM is owned by _sigterm (registered below); the dump runs
+        # via atexit once the main loop unwinds after STOP
         atexit.register(_dump_cpu)
-        _sig.signal(_sig.SIGTERM, _dump_cpu)
 
 
     signal.signal(signal.SIGTERM, _sigterm)
@@ -477,6 +479,12 @@ def main():
     def _inflight_path(cmd):
         k = hashlib.sha256(f"{ws}\x00{cmd}".encode()).hexdigest()
         return cache_dir / f"{k}.inflight"
+
+    def _clear_marker(cmd):
+        try:
+            _inflight_path(cmd).unlink()
+        except OSError:
+            pass
 
     def _spawn(cmd):
         try:
@@ -544,15 +552,19 @@ def main():
                     pr.communicate()
                     CURRENT_PROCS.discard(pr)
                     live.remove(pr)
-                    _log(f"gen {gen}: TIMEOUT {pr._cmd!r}")
+                    _clear_marker(pr._cmd)   # no entry will ever land; a
+                    _log(f"gen {gen}: TIMEOUT {pr._cmd!r}")  # live-looking
+                    # marker would make the daemon join-wait for nothing
             if read_generation(cache_dir) != gen:
                 for pr in live:
+                    _clear_marker(pr._cmd)
                     _kill_tree(pr); pr.communicate(); CURRENT_PROCS.discard(pr)
                 _log(f"gen {gen}: raced by newer edit, batch abandoned")
                 return n
             time.sleep(0.05)
         for pr in live:  # STOP path
             _kill_tree(pr); pr.communicate(); CURRENT_PROCS.discard(pr)
+            _clear_marker(pr._cmd)
         return n
 
     node_cache = {}

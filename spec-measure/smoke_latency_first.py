@@ -49,13 +49,13 @@ ROOT.mkdir(parents=True)
 shutil.copytree(SRC / "latency-opt", ROOT / "latency-opt", symlinks=True,
                 ignore=shutil.ignore_patterns("ledger", "__pycache__"))
 
-r1 = subprocess.run([PY, str(HERE / "patch_latency_first.py"), str(ROOT)],
+r1 = subprocess.run([PY, str(HERE.parent / "archive" / "patchers" / "spec-measure" / "patch_latency_first.py"), str(ROOT)],
                     capture_output=True, text=True)
 check("L1 patch applies (or already applied)", r1.returncode == 0
       and ("already present: ['worker marker gen stamp'" in r1.stdout
            or "applied: ['worker marker gen stamp'" in r1.stdout),
       r1.stdout[-300:] + r1.stderr[-300:])
-r2 = subprocess.run([PY, str(HERE / "patch_latency_first.py"), str(ROOT)],
+r2 = subprocess.run([PY, str(HERE.parent / "archive" / "patchers" / "spec-measure" / "patch_latency_first.py"), str(ROOT)],
                     capture_output=True, text=True)
 check("L1 idempotent", "applied: []" in r2.stdout, r2.stdout[-200:])
 ok = subprocess.run(["bash", "-n", str(

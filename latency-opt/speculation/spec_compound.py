@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""spec_compound.py — conservative compound-command decomposition. v2.
+"""spec_compound.py — conservative compound-command decomposition.
 
-LEGACY API (unchanged behavior, used by the watcher — build 11):
+WATCHER API (used by edit_respec.py pre-runs):
 
 split_compound(cmd) -> [(part, stop_on_fail), ...] or None. Split ONLY at
 top-level `&&` and `;` (quote- and paren-aware). ANY hazard anywhere
@@ -13,12 +13,13 @@ over-splitting is wrong results.
 fold_cd(parts, cwd) -> (parts', cwd'): folds a LEADING `cd X` into the
 working directory for the remaining parts -- normalization, not execution.
 
-SERVE-SIDE API (v2, used by the daemon prefix-serve):
+SERVE-SIDE API (used by the daemon prefix-serve):
 
 split_for_serve(cmd) -> [(part, stop_on_fail, servable), ...] or None.
-Relaxation grounded in live evidence (astropy 20260731: `git diff --check;
-git diff --stat; git diff .. | sed ..; pytest ..` refused whole while its
-first parts sat in cache): a hazard CONFINED WITHIN one part does not
+Looser than the watcher API, grounded in live evidence (astropy 20260731:
+`git diff --check; git diff --stat; git diff .. | sed ..; pytest ..` refused
+whole while its first parts sat in cache): a hazard CONFINED WITHIN one part
+does not
 poison the split -- pipes/redirects/substitutions never cross a top-level
 `&&`/`;` boundary, so splitting stays sound; the hazard part is merely
 flagged servable=False (it ends any served prefix and executes live in the

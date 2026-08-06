@@ -10,7 +10,7 @@ from pathlib import Path
 
 ROOT = Path("/projects/kzhou6/czhai/agent-profiling")
 TEMPLATE_ID = "astropy__astropy-12907"
-NEW_IDS = [l.split("\t")[1].strip() for l in open(ROOT/"latency-opt/eval_set_30.txt")
+NEW_IDS = [l.split("\t")[1].strip() for l in open(ROOT/"latency-opt/eval_sets/eval_set_30.txt")
            if l.startswith("swebench") and TEMPLATE_ID not in l
            and not (ROOT/f"prompts/swe_{l.split(chr(9))[1].strip()}.txt").exists()]
 print("generating for:", NEW_IDS)

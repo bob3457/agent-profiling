@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """smoke_agnostic.py — offline acceptance for the task-agnostic speculator.
 
-Run AFTER deploying (spec_tiers.py copied, three patchers applied):
+Run from the repo root:
     python3 smoke_agnostic.py [repo_root]
 
 What it does, with no codex / no network / no daemon:
-  1. spec_tiers v2 self-test (the full 116-case suite).
-  2. corpus_coverage on an embedded mixed corpus; asserts v2 covers
+  1. spec_tiers self-test (the full embedded suite).
+  2. corpus_coverage on an embedded mixed corpus; asserts the deployed
+     tier policy covers
      strictly more than a floor and specific known commands land where
      they must.
   3. speculative_worker end-to-end in a temp GENERIC workspace (csv + shell
@@ -69,7 +70,7 @@ with tempfile.TemporaryDirectory() as td:
                        capture_output=True, text=True)
     check("corpus_coverage runs", r.returncode == 0, r.stderr[-200:])
     out = r.stdout
-    # 13 commands; with v2 deployed the servable set is:
+    # 13 commands; with the deployed tier policy the servable set is:
     # ls -la / cat README / pwd;ls / git-triple / sed -n / wc&&head /
     # sqlite select / cd&&pytest (folded) / grep quoted-pipe  = 9
     line = next((l for l in out.splitlines() if l.startswith("ANY servable")), "")
