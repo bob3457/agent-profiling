@@ -115,6 +115,30 @@ def normalize_django(cmd: str):
     return hashlib.sha256(key_src.encode()).hexdigest()
 
 
+# flags whose VALUE is a separate argv token: the value is not a target.
+# (spec-score-v1: `pytest -k separable a/test_x.py` used to yield the
+# phantom target 'separable', corrupting scoring and near-miss telemetry)
+_PYTEST_VALUE_FLAGS = {"-k", "-m", "-p", "-o", "-W", "-n", "-c", "--tb",
+                       "--deselect", "--ignore", "--maxfail", "--rootdir",
+                       "--confcutdir", "--junitxml", "--durations",
+                       "--cov", "--dist", "--timeout", "-r"}
+_DJANGO_VALUE_FLAGS = {"-v", "--verbosity", "--settings", "--parallel",
+                       "--exclude-tag", "--tag"}
+
+
+def _positional_targets(args, value_flags):
+    out, i = [], 0
+    while i < len(args):
+        a = args[i]
+        if a.startswith("-"):
+            if a in value_flags:
+                i += 1                  # skip the flag's value token
+        else:
+            out.append(a)
+        i += 1
+    return out
+
+
 def parse_command(cmd: str):
     """Structured parse for near-miss scoring. Returns
     {family, targets, key} or None. `targets` are comparable units:
@@ -131,13 +155,14 @@ def parse_command(cmd: str):
     if (parts[0] in ("python", "python3") and parts[1:3] == ["-m", "pytest"]) \
             or parts[0] == "pytest":
         args = parts[3:] if parts[0] != "pytest" else parts[1:]
-        targets = [a for a in args if not a.startswith("-")]
+        targets = _positional_targets(args, _PYTEST_VALUE_FLAGS)
         return {"family": "pytest", "targets": targets,
                 "key": normalize_pytest(cmd)}
     if len(parts) >= 3 and parts[0] in ("python", "python3") \
             and parts[1].endswith("runtests.py"):
-        targets = [a for a in parts[2:]
-                   if not a.startswith("-") and not a.isdigit()]
+        targets = [a for a in _positional_targets(parts[2:],
+                                                  _DJANGO_VALUE_FLAGS)
+                   if not a.isdigit()]
         return {"family": "django", "targets": targets,
                 "key": normalize_django(cmd)}
     return None

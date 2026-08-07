@@ -207,7 +207,8 @@ def main():
                         "estimated": True})
         gate_chars = {"prompt": len(PROMPT) + len(stmt),
                       "answer": len(gate_out)}
-        words = [w.strip().upper() for w in (r.stdout or "").split()]
+        words = [w.strip().upper().strip(".:,;!?'\"`)(*_")
+                 for w in (r.stdout or "").split()]  # spec-score-v1
         ans = next((w for w in reversed(words) if w in ("YES", "NO")), None)
         if ans == "NO":
             verdict, reason = "NOGO", "llm: no edit-and-verify loop expected"

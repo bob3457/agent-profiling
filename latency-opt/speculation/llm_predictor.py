@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""llm_predictor.py — LLM-based first-command prediction.
+"""llm_predictor.py — LLM-based first-command prediction. [spec-parse-v2]
 
 Predicts the first test invocation(s) an agent will run for a task, by
 asking a cheap model (codex-low by default) to read the same problem
@@ -60,9 +60,10 @@ def _test_file_listing(ws: Path) -> str:
 PROMPT_TEMPLATE = """You are predicting the FIRST test command a coding agent will run \
 for the software issue below. Do NOT run anything. Do NOT explain.
 
-Output exactly 3 candidate commands, one per line, most likely first, \
-in verbatim runnable form (e.g. `python -m pytest path/to/test_file.py -q` \
-or `python tests/runtests.py label.module`). Nothing else.
+Output a JSON array of exactly 3 strings, most likely first. Each string \
+is one verbatim runnable command (e.g. "python -m pytest path/to/test_file.py -q" \
+or "python tests/runtests.py label.module"). Output ONLY the JSON array — \
+no prose, no markdown fences, no numbering.
 
 ## Issue
 {problem}
@@ -76,10 +77,11 @@ or `python tests/runtests.py label.module`). Nothing else.
 GENERIC_PROMPT_TEMPLATE = """You are predicting the FIRST shell commands a \
 terminal agent will run for the task below. Do NOT run anything. Do NOT explain.
 
-Output exactly 5 candidate commands, one per line, most likely first, in \
-verbatim runnable form. Prefer simple read-only exploration and verification \
-commands (inspecting files, listing, searching, running existing test or \
-check commands). Nothing else — no numbering, no backticks, no prose.
+Output a JSON array of exactly 5 strings, most likely first. Each string is \
+one verbatim runnable shell command. Prefer simple read-only exploration and \
+verification commands (inspecting files, listing, searching, running existing \
+test or check commands). Output ONLY the JSON array — no prose, no markdown \
+fences, no numbering.
 
 ## Task
 {problem}
@@ -165,6 +167,24 @@ def _walk_tokens(obj, acc):
             _walk_tokens(v, acc)
 
 
+
+
+_LAST_MSG_SUPPORT = {}
+
+
+def _supports_last_message(binary: str) -> bool:
+    """Does `<binary> exec` support --output-last-message? Probed once per
+    binary via --help; any failure means no (fall back to stream parse)."""
+    if binary not in _LAST_MSG_SUPPORT:
+        try:
+            h = subprocess.run([binary, "exec", "--help"],
+                               capture_output=True, text=True, timeout=15)
+            _LAST_MSG_SUPPORT[binary] = "--output-last-message" in (
+                (h.stdout or "") + (h.stderr or ""))
+        except Exception:
+            _LAST_MSG_SUPPORT[binary] = False
+    return _LAST_MSG_SUPPORT[binary]
+
 def predict_meta(workspace, problem_statement: str):
     """Full-fat entry point: returns (commands, meta) where meta carries
     token usage, latency, and the raw model lines for the ledger."""
@@ -184,58 +204,88 @@ def predict_meta(workspace, problem_statement: str):
     extra = shlex.split(os.environ.get("SPEC_LLM_ARGS",
                                        "-c model_reasoning_effort=low"))
     timeout = float(os.environ.get("SPEC_LLM_TIMEOUT", "120"))
+    # ---- invocation + parsing: spec-parse-v1 (see predict_parse.py) ----
+    from predict_parse import (extract_agent_text, extract_usage,
+                               extract_commands, looks_like_command)
+    import tempfile
     argv = [binary, "exec", "--json", "--sandbox", "read-only",
-            "--skip-git-repo-check", *extra, prompt]
+            "--skip-git-repo-check", *extra]
+    last_msg_path = None
+    if _supports_last_message(binary):
+        fd, last_msg_path = tempfile.mkstemp(prefix="spec_lastmsg_",
+                                             suffix=".txt")
+        os.close(fd)
+        argv += ["--output-last-message", last_msg_path]
+    argv.append(prompt)
     t0 = time.time()
     try:
         proc = subprocess.run(argv, cwd=ws, capture_output=True, text=True,
                               timeout=timeout)
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        return [], {"error": str(e), "latency_s": time.time() - t0}
-    tokens, text_parts = {}, []
-    for line in proc.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        if line.startswith("{"):
+        if last_msg_path:
             try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                text_parts.append(line)
-                continue
-            _walk_tokens(obj, tokens)
-            # harvest any text content fields
-            def grab(o):
-                if isinstance(o, dict):
-                    for k, v in o.items():
-                        if k in ("text", "content", "message", "output") and isinstance(v, str):
-                            text_parts.append(v)
-                        else:
-                            grab(v)
-                elif isinstance(o, list):
-                    for v in o:
-                        grab(v)
-            grab(obj)
-        else:
-            text_parts.append(line)
-    cmds, seen = [], set()
-    for raw in "\n".join(text_parts).splitlines():
-        cand = raw.strip().strip("`").lstrip("-*0123456789. ").strip()
-        if cand in seen:
-            continue
-        if mode == "generic":
-            if _looks_like_command(cand):
-                seen.add(cand)
-                cmds.append(cand)
-        else:
-            parsed = parse_command(cand)
-            if parsed and parsed["targets"]:
-                seen.add(cand)
-                cmds.append(cand)
+                os.unlink(last_msg_path)
+            except OSError:
+                pass
+        return [], {"error": str(e), "latency_s": time.time() - t0}
+    tokens = extract_usage(proc.stdout)
+    text, source = "", "legacy"
+    if last_msg_path:
+        try:
+            text = Path(last_msg_path).read_text(errors="replace").strip()
+        except OSError:
+            text = ""
+        finally:
+            try:
+                os.unlink(last_msg_path)
+            except OSError:
+                pass
+        if text:
+            source = "last_message"
+    if not text:
+        text = extract_agent_text(proc.stdout)
+        if text:
+            source = "stream"
+    if not text:                        # last resort: old naive harvest
+        parts = []
+        for line in proc.stdout.splitlines():
+            line = line.strip()
+            if line and not line.startswith("{"):
+                parts.append(line)
+        text = "\n".join(parts)
+    if mode == "generic":
+        validator = looks_like_command
+    else:
+        def validator(c):
+            p = parse_command(c)
+            return bool(p and p["targets"])
+    limit = 5 if mode == "generic" else 3
+    cmds = extract_commands(text, mode=mode, limit=limit,
+                            validator=validator)
     meta = {"latency_s": round(time.time() - t0, 2), "tokens": tokens,
-            "n_raw_lines": len(text_parts), "exit": proc.returncode,
-            "mode": mode}
-    return cmds[:5 if mode == "generic" else 3], meta
+            "n_raw_lines": len(text.splitlines()), "exit": proc.returncode,
+            "mode": mode, "text_source": source,
+            "parse": ("json" if text.lstrip().startswith("[")
+                      or "[\"" in text[:200] else "lines")}
+    # ---- raw capture (SPEC_PRED_CAPTURE_DIR): save the paid-for model ----
+    # output so parser changes replay offline with ZERO new tokens
+    # (testset/build_testset.py + replay_testset.py consume these files)
+    cap = os.environ.get("SPEC_PRED_CAPTURE_DIR")
+    if cap:
+        try:
+            Path(cap).mkdir(parents=True, exist_ok=True)
+            rec = {"kind": "capture", "task": ws.name, "ts": time.time(),
+                   "mode": mode, "prompt": prompt[:20000],
+                   "raw_stdout": proc.stdout[-400000:],
+                   "answer_text": text[:100000],
+                   "text_source": source, "predicted": cmds,
+                   "tokens": tokens, "latency_s": meta["latency_s"]}
+            (Path(cap) / f"pred_{ws.name}_{int(time.time() * 1000)}.json"
+             ).write_text(json.dumps(rec))
+            meta["capture"] = True
+        except OSError:
+            pass
+    return cmds, meta
 
 
 def predict(workspace, problem_statement: str):

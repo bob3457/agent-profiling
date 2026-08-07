@@ -96,19 +96,27 @@ def default_predictor(workspace: Path, problem_statement: str):
 
 
 def score_pair(pred, obs):
-    """pred/obs are parse_command dicts. Return graded score."""
+    """pred/obs are parse_command dicts. Return graded score.
+
+    spec-score-v1: partial target overlap is floored at the same
+    file-level (0.8) / family-level (0.2) credit a fully DISJOINT
+    prediction would earn — previously 1 right node id out of an
+    observed 9-id run scored 0.111 while a wrong test in the right
+    file scored 0.8 (non-monotone). Re-score old corpora before
+    comparing against pre-fix baselines."""
     if pred["family"] != obs["family"]:
         return 0.0
     pt, ot = set(pred["targets"]), set(obs["targets"])
+    if not pt or not ot:
+        return 0.0
     if pt == ot:
         return 1.0
-    if pt & ot:
-        return round(len(pt & ot) / len(pt | ot), 3)
     p_files = {t.split("::")[0].split(".")[0] for t in pt}
     o_files = {t.split("::")[0].split(".")[0] for t in ot}
-    if p_files & o_files:
-        return 0.8
-    return 0.2
+    floor = 0.8 if (p_files & o_files) else 0.2
+    if pt & ot:
+        return round(max(len(pt & ot) / len(pt | ot), floor), 3)
+    return floor
 
 
 def cmd_score(args):
