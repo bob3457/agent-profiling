@@ -88,7 +88,6 @@ PROMPT=$(cat "$PROMPT_FILE")
       --sandbox danger-full-access \"\$0\" \
       > /spec_logs/stdout.jsonl 2> /spec_logs/stderr.log
     rc=\$?
-    cd /testbed && git diff > /spec_logs/patch.diff 2>/dev/null
     [ -n \"\$RESPEC_IN\" ] && kill \$RESPEC_IN 2>/dev/null
     exit \$rc" "$PROMPT"
 echo $? > "$RESULTS/exit_code"
