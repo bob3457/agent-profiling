@@ -1,0 +1,10 @@
+swebench	astropy__astropy-13398
+swebench	astropy__astropy-14369
+swebench	django__django-10973
+swebench	django__django-11066
+swebench	django__django-11087
+swebench	astropy__astropy-13236
+swebench	astropy__astropy-13579
+swebench	astropy__astropy-14995
+swebench	astropy__astropy-14309
+swebench	astropy__astropy-12907
