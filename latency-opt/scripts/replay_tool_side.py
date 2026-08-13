@@ -151,7 +151,10 @@ def main():
     ap.add_argument("--workspace", required=True)
     ap.add_argument("--reset", default="git", help="git | rsync:DIR | none")
     ap.add_argument("--reps", type=int, default=10)
-    ap.add_argument("--daemon-script", required=True)
+    ap.add_argument("--daemon-script", default=None,
+                    help="path to shell_sessiond.py; omit for a STOCK-ONLY "
+                         "replay (e.g. SPEC_PERF_DIR CPU characterization, "
+                         "where the daemon leg adds nothing)")
     ap.add_argument("--no-login", action="store_true",
                     help="use bash -c instead of -lc in both legs")
     ap.add_argument("--out", default=None, help="write raw results json here")
@@ -162,9 +165,10 @@ def main():
     print(f"trajectory: {len(cmds)} commands from {args.jsonl}")
 
     results = {"stock": [], "daemon": []}
+    modes = ("stock", "daemon") if args.daemon_script else ("stock",)
     # interleave modes each rep so drift (cache warmth, filesystem) hits both equally
     for rep in range(args.reps):
-        for mode in ("stock", "daemon"):
+        for mode in modes:
             reset_workspace(args.reset, args.workspace)
             if mode == "stock":
                 per = run_stock(cmds, login)
@@ -173,8 +177,21 @@ def main():
             results[mode].append(per)
             print(f"rep {rep+1:2d} {mode:6s} total={sum(per):7.3f}s")
 
-    print("\n=== paired summary ===")
+    n = len(cmds)
     stock_tot = [sum(r) for r in results["stock"]]
+    if not args.daemon_script:
+        med_per_stock = statistics.median(x for r in results["stock"] for x in r)
+        print(f"\nstock total: median {statistics.median(stock_tot):.3f}s "
+              f"(min {min(stock_tot):.3f}, max {max(stock_tot):.3f}); "
+              f"per-command median {med_per_stock*1000:.1f}ms ({n} cmds)")
+        if args.out:
+            Path(args.out).write_text(json.dumps(
+                {"jsonl": args.jsonl, "n_cmds": n, "reps": args.reps,
+                 "login": login, "results": results}, indent=2))
+            print(f"raw -> {args.out}")
+        return
+
+    print("\n=== paired summary ===")
     daemon_tot = [sum(r) for r in results["daemon"]]
     deltas = [s - d for s, d in zip(stock_tot, daemon_tot)]
     print(f"stock  total: median {statistics.median(stock_tot):.3f}s "
@@ -183,7 +200,6 @@ def main():
           f"(min {min(daemon_tot):.3f}, max {max(daemon_tot):.3f})")
     print(f"paired delta (stock - daemon): median {statistics.median(deltas):+.3f}s, "
           f"all-positive={all(x > 0 for x in deltas)}")
-    n = len(cmds)
     med_per_stock = statistics.median(x for r in results["stock"] for x in r)
     med_per_daemon = statistics.median(x for r in results["daemon"] for x in r)
     print(f"per-command median: stock {med_per_stock*1000:.1f}ms, "

@@ -157,6 +157,8 @@ def main():
     rows = [r for r in rows if (r.get("wall_ms") or 0) >= args.min_wall_ms]
     rows.sort(key=lambda r: r.get("task_clock_ms") or 0, reverse=True)
 
+    if args.csv:
+        Path(args.csv).parent.mkdir(parents=True, exist_ok=True)
     out = open(args.csv, "w", newline="") if args.csv else sys.stdout
     w = csv.DictWriter(out, fieldnames=COLS, extrasaction="ignore")
     w.writeheader()
