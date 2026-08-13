@@ -1,5 +1,12 @@
 # spec-parse-v2 — prediction parser rewrite + LLM invocation change + replayable test set
 
+> **Status: fully deployed.** Every change described below is already
+> applied to the files tracked in this repo. The one-shot patchers live in
+> `../archive/patchers/spec-parse-v2/`; the shipped `speculation/` and
+> `testset/` snapshots were removed (the live copies under
+> `latency-opt/speculation/` and `testset/` are newer). The deploy steps
+> below are a historical record only — do not re-run them.
+
 ## Confirmed bugs (all reproduced offline against the shipped code)
 
 **llm_predictor.py (the parser you asked about)**

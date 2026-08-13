@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""llm_predictor.py — LLM-based first-command prediction. [spec-parse-v2]
+"""llm_predictor.py — LLM-based first-command prediction.
 
 Predicts the first test invocation(s) an agent will run for a task, by
 asking a cheap model (codex-low by default) to read the same problem
@@ -279,7 +279,7 @@ def predict_meta(workspace, problem_statement: str):
                                        "-c model_reasoning_effort=low"))
     timeout = float(os.environ.get("SPEC_LLM_TIMEOUT", "120"))
     backend = os.environ.get("SPEC_LLM_MODE", "codex")
-    # ---- invocation + parsing: spec-parse-v1 (see predict_parse.py) ----
+    # ---- invocation + parsing (see predict_parse.py) ----
     from predict_parse import (extract_agent_text, extract_usage,
                                extract_commands, looks_like_command)
     import tempfile

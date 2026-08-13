@@ -12,16 +12,16 @@ profile). Two invocations map to the same key iff they run the same tests in
 the same environment with the same output format — the only case where
 serving cached output is faithful.
 
-v2 (spec-generalize-v1), driven by the 10-repo parser audit:
+Normalization rules:
   * interpreter variants: `python3.9 -m pytest`, `/path/to/venv/bin/python
-    -m pytest`, `/path/pytest` are now recognized (26 audit gaps). The
+    -m pytest`, and `/path/pytest` are all recognized. The
     interpreter is folded into the key when non-canonical: a venv python is
     a DIFFERENT environment, so it gets its own equivalence class rather
     than being normalized away — cross-env serving would be a correctness
     bug. Heads containing `$` (unexpanded shell vars) are refused: two
     different var values would collide on one key.
   * leading `env` prefix stripped, same policy as bare VAR=val prefixes
-    (11 audit gaps: `env PYTHONPATH=. python tests/runtests.py ...`).
+    (e.g. `env PYTHONPATH=. python tests/runtests.py ...`).
   * parse_command tolerates trailing redirections (`>f`, `2>&1`) for
     SCORING, returning key=None: the command is comparable for predictor
     eval but never servable — serving would skip creating the file the
@@ -166,9 +166,9 @@ def normalize_django(cmd: str):
     return hashlib.sha256(key_src.encode()).hexdigest()
 
 
-# flags whose VALUE is a separate argv token: the value is not a target.
-# (spec-score-v1: `pytest -k separable a/test_x.py` used to yield the
-# phantom target 'separable', corrupting scoring and near-miss telemetry)
+# Flags whose VALUE is a separate argv token: the value is not a target
+# (in `pytest -k separable a/test_x.py`, 'separable' is a flag argument,
+# not a test target).
 _PYTEST_VALUE_FLAGS = {"-k", "-m", "-p", "-o", "-W", "-n", "-c", "--tb",
                        "--deselect", "--ignore", "--maxfail", "--rootdir",
                        "--confcutdir", "--junitxml", "--durations",

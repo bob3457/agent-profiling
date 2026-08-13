@@ -1,5 +1,10 @@
 # spec-heads-v1 — TraceLab executable whitelist fold-in
 
+> **Status: fully deployed.** The whitelist is already merged into
+> `latency-opt/speculation/predict_parse.py`; the one-shot patcher lives
+> in `../archive/patchers/spec-heads-v1/`. The apply steps below are a
+> historical record only — do not re-run them.
+
 Apply AFTER spec-parse-v2 (patches predict_parse.py in place):
 
     cd /projects/kzhou6/czhai/agent-profiling

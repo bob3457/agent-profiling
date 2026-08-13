@@ -16,9 +16,8 @@ working directory for the remaining parts -- normalization, not execution.
 SERVE-SIDE API (used by the daemon prefix-serve):
 
 split_for_serve(cmd) -> [(part, stop_on_fail, servable), ...] or None.
-Looser than the watcher API, grounded in live evidence (astropy 20260731:
-`git diff --check; git diff --stat; git diff .. | sed ..; pytest ..` refused
-whole while its first parts sat in cache): a hazard CONFINED WITHIN one part
+Looser than the watcher API: a hazard CONFINED WITHIN one part (e.g.
+`git diff --check; git diff --stat; git diff .. | sed ..; pytest ..`)
 does not
 poison the split -- pipes/redirects/substitutions never cross a top-level
 `&&`/`;` boundary, so splitting stays sound; the hazard part is merely
@@ -343,7 +342,7 @@ if __name__ == "__main__":
         good &= got_view == want
         print(f"{mark} {cmd[:58]!r:<62} -> {got_view}")
 
-    # -------- legacy behavior, unchanged (regression) --------
+    # -------- watcher-API split_compound cases --------
     check("python -m pytest x.py -q", ["python -m pytest x.py -q"])
     check("cd /testbed && python -m pytest x.py -q",
           ["cd /testbed", "python -m pytest x.py -q"])
@@ -378,7 +377,7 @@ if __name__ == "__main__":
         good &= view == want
         print(f"{mark} serve {cmd[:52]!r:<56} -> {view}")
 
-    # the live astropy case: pipe confined in part 3 no longer poisons parts 1-2
+    # pipe confined in part 3 must not poison parts 1-2
     scheck("git diff --check; git diff --stat; git diff HEAD | sed -n '1,9p'; pytest -q",
            [("git diff --check", False, True),
             ("git diff --stat", False, True),
@@ -426,7 +425,7 @@ if __name__ == "__main__":
     print(f"{OK if ok else BAD} state/cd predicates")
     good &= ok
 
-    # -------- spec-serve-v1: newline split + ro_passthrough --------
+    # -------- newline split + ro_passthrough --------
     scheck("pytest x -q\ngit diff --check\ngit status --short",
            [("pytest x -q", False, True), ("git diff --check", False, True),
             ("git status --short", True, True)])

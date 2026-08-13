@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""replay_segment_serve.py — validate spec-serve-v1 offline: replay every
-family command from the 3-arm runs through the NEW segment-serve planner
+"""replay_segment_serve.py — validate segment-serve offline: replay every
+family command from the 3-arm runs through the segment-serve planner
 against each run's OWN spec cache (key files on disk), and report how many
-previously-cold/near-miss commands would now serve, with estimated savings.
+cold/near-miss commands the planner would serve, with estimated savings.
 
 Upper bound caveat: workspace-fingerprint (generation) validity cannot be
 replayed offline — a fraction of planned serves would be gen-stale live.
-Run AFTER applying patch_spec_serve_v1.py (uses the patched splitter).
 
 Usage (repo root):
   python3 scripts/replay_segment_serve.py \

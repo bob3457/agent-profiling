@@ -73,9 +73,9 @@ def _event_text(line):
     """Schema-aware: agent_message/reasoning text is the signal; a
     command_execution's command (wrapper stripped) is secondary; lifecycle
     and file_change events yield nothing. Leaf-walk kept ONLY as a
-    format-drift fallback, hardened against UUIDs/event-names/status words
-    (run 20260731_183452: 'thread.started <uuid> turn.started' outran the
-    agent's real opening message by one event)."""
+    format-drift fallback, filtered against UUIDs/event-names/status words
+    so lifecycle noise (e.g. 'thread.started <uuid> turn.started') cannot
+    outrun the agent's real opening message."""
     try:
         obj = json.loads(line)
     except json.JSONDecodeError:
@@ -208,7 +208,7 @@ def main():
         gate_chars = {"prompt": len(PROMPT) + len(stmt),
                       "answer": len(gate_out)}
         words = [w.strip().upper().strip(".:,;!?'\"`)(*_")
-                 for w in (r.stdout or "").split()]  # spec-score-v1
+                 for w in (r.stdout or "").split()]  # "YES." parses too
         ans = next((w for w in reversed(words) if w in ("YES", "NO")), None)
         if ans == "NO":
             verdict, reason = "NOGO", "llm: no edit-and-verify loop expected"

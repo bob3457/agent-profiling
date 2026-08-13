@@ -303,14 +303,12 @@ def _log_prefix_decision(cache_dir, cmd, n, total, saved_s, full,
 
 
 def _prefix_try_serve(cache_dir: str, cmd: str, cwd: str, exec_fn=None):
-    """[spec-serve-v1] Segment-serve a compound: serve cached parts ANYWHERE
+    """Segment-serve a compound: serve cached parts ANYWHERE
     in the line; read-only allowlisted parts before/between them execute
     LIVE in order via exec_fn (bash &&/; semantics on real exit codes).
     Static plan first: take over only if >=1 serve occurs before any
     unhandleable part; otherwise None and the original command runs
-    untouched. exec_fn=None restores prefix-only behavior (no live parts).
-
-    Serve a leading run of a compound's parts from the spec cache.
+    untouched. exec_fn=None gives prefix-only behavior (no live parts).
 
     Returns None (nothing servable; caller proceeds unchanged) or a dict:
       remainder: None if fully served, else the re-joined live command

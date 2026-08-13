@@ -2,7 +2,7 @@
 """smoke_predict_parse.py — offline end-to-end test of the patched
 llm_predictor via a stub codex binary. No network, no tokens.
 
-Run from repo root AFTER applying patch_predictor_parse.py:
+Run from repo root:
     python3 smoke_predict_parse.py [--root .]
 
 Covers, per (last-message-supported x model-output-style):

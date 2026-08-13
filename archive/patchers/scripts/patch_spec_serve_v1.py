@@ -25,6 +25,14 @@ from pathlib import Path
 SC = Path("latency-opt/speculation/spec_compound.py")
 SD = Path("latency-opt/scripts/shell_sessiond.py")
 
+# Guard on code, not comment wording: the segment-serve signature only
+# exists once the patch is in. Prevents re-application against a tree
+# whose comments have since been reworded.
+if ("def _prefix_try_serve(cache_dir: str, cmd: str, cwd: str, exec_fn=None):"
+        in SD.read_text()):
+    raise SystemExit("[skip] segment-serve already present in this tree; "
+                     "nothing to do")
+
 
 def apply(path, old, new, tag):
     s = path.read_text()

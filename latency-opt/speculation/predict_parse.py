@@ -1,31 +1,22 @@
 #!/usr/bin/env python3
 """predict_parse.py — robust parsing of LLM prediction output.
 
-Replaces llm_predictor.py's ad-hoc harvest, which had four measured
-failure modes (confirmed offline against the shipped code):
-
-  1. `lstrip("-*0123456789. ")` strips a CHARACTER SET, not a prefix:
-     `./verify.sh` -> `/verify.sh`, `7z x a.zip` -> `z x a.zip`.
-  2. Markdown fences survive as commands: line "```bash" -> "bash",
-     which passes the old validator.
-  3. The old validator accepts prose: "Check the README first",
-     "Looking at the files", "Run pytest to verify" all returned True.
-  4. The generic leaf-walk over --json events harvested reasoning text,
-     command output, and prompt echoes, not just the model's answer;
-     _walk_tokens SUMMED every int with "token" in its key across every
-     event -> token accounting inflated by deltas/cumulative repeats.
+Turns a codex `--json` event stream into a clean list of predicted shell
+commands plus accurate token accounting, for llm_predictor.py.
 
 Three layers, each independently testable:
 
-  extract_agent_text(stdout)   schema-aware: agent_message items only
-                               (mirrors llm_gate._event_text hardening,
-                               run 20260731_183452), legacy-msg and
-                               plain-text fallbacks, exact-dup dedupe.
-  extract_usage(stdout)        LAST usage-shaped dict wins (cumulative
-                               totals), never a sum over deltas.
-  extract_commands(text, mode) JSON-array first (the v2 prompt asks for
-                               one), then fenced-block/bullet-aware line
-                               cleaning + a structural command validator.
+  extract_agent_text(stdout)   schema-aware: agent_message items only —
+                               reasoning, command_execution, lifecycle,
+                               and prompt-echo events are never harvested;
+                               legacy-msg and plain-text fallbacks,
+                               exact-dup dedupe.
+  extract_usage(stdout)        LAST usage-shaped dict wins (streams emit
+                               cumulative totals), never a sum over deltas.
+  extract_commands(text, mode) JSON-array first (the prompt asks for one),
+                               then fenced-block/bullet-aware line cleaning
+                               + a structural command validator that
+                               rejects prose and markdown-fence artifacts.
 
 All pure functions; self-test with `python3 predict_parse.py`.
 """
@@ -54,8 +45,8 @@ def extract_agent_text(stdout: str) -> str:
     schema). Deltas are skipped; item.updated/item.completed both carrying
     the full text is handled by exact-string dedupe. Secondary: legacy
     `msg.type == "agent_message"` protocol. Reasoning, command_execution,
-    lifecycle, and file_change events are never harvested — reasoning is
-    where phantom "commands" came from.
+    lifecycle, and file_change events are never harvested, so text from
+    those event kinds cannot surface as phantom "commands".
     """
     msgs, seen = [], set()
 
@@ -140,8 +131,8 @@ _PROSE_HEADS = {
 
 # heads that are unambiguously commands even bare ("ls" alone is valid)
 _KNOWN_HEADS = {
-    # spec-heads-v1: merged with uw-syfi/TraceLab public_common_executables.txt
-    # (Apache-2.0) -- executables observed across 357K real agent rounds
+    # Includes uw-syfi/TraceLab public_common_executables.txt (Apache-2.0):
+    # executables observed across 357K real agent rounds
     "7z", "accelerate", "accton", "addr2line", "alembic", "apply_patch",
     "apt", "apt-cache", "arp", "auditctl", "ausearch", "awk", "aws",
     "base64", "basename", "bash", "bc", "bibtex", "black", "brew", "bundle",

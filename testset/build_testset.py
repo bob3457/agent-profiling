@@ -3,7 +3,7 @@
 
 Zero new tokens: harvests (prediction, observed-commands) pairs from
 completed arm runs, plus (optionally) raw-capture files written by the
-spec-parse-v2 predictor and ledger prediction records.
+predictor's capture files and ledger prediction records.
 
 Sources merged per (bench, task, run_dir):
   spec.log                     `[spec] llm predictor: [...]` lines
