@@ -38,8 +38,15 @@ EVENT_KEYS = {
     "cpu-migrations": "cpu_migrations",
     "page-faults": "page_faults",
     # ARM PMU names (Neoverse) map onto the same columns
+    "cpu_cycles": "cycles",
+    "inst_retired": "instructions",
     "l1d_cache": "cache_references",
     "l1d_cache_refill": "cache_misses",
+    "br_retired": "branches",
+    "l2d_cache": "l2_references",
+    "l2d_cache_refill": "l2_misses",
+    "ll_cache_rd": "llc_references",
+    "ll_cache_miss_rd": "llc_misses",
 }
 
 
@@ -129,6 +136,9 @@ def collect(root: Path):
         refs, miss = row.get("cache_references"), row.get("cache_misses")
         if refs and miss is not None:
             row["cache_miss_rate"] = round(miss / refs, 4)
+        l2r, l2m = row.get("l2_references"), row.get("l2_misses")
+        if l2r and l2m is not None:
+            row["l2_miss_rate"] = round(l2m / l2r, 4)
         tc, wall = row.get("task_clock_ms"), row.get("wall_ms")
         if tc and wall:
             row["cpu_util"] = round(tc / wall, 3)
@@ -137,7 +147,7 @@ def collect(root: Path):
 
 
 COLS = ["tool_id", "source", "action", "family", "wall_ms", "task_clock_ms",
-        "cpu_util", "ipc", "cache_miss_rate", "max_rss_kb", "instructions",
+        "cpu_util", "ipc", "cache_miss_rate", "l2_miss_rate", "max_rss_kb", "instructions",
         "cycles", "cache_references", "cache_misses", "context_switches",
         "page_faults", "fs_inputs", "fs_outputs", "returncode", "timeout",
         "raced", "command"]
