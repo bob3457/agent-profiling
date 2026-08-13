@@ -12,11 +12,17 @@ Interface matches predictor_eval's --predictor contract:
 so the SAME offline scorer that produced the heuristic's 0.400 baseline
 scores this predictor, and the same worker flag runs it live.
 
-Backend: shells out to the codex CLI in read-only sandbox for one short
-turn. Knobs (env):
+Backends (SPEC_LLM_MODE):
+  codex (default)  shells out to the codex CLI in read-only sandbox.
     SPEC_LLM_BIN    binary            (default: codex)
     SPEC_LLM_ARGS   extra args        (default: "-c model_reasoning_effort=low")
-    SPEC_LLM_TIMEOUT seconds          (default: 120)
+  openai           POSTs to an OpenAI-compatible endpoint (llama.cpp
+    llama-server on the GH200's own GPU: zero tokens, zero quota
+    contention with the agent). [spec-localpred-v1]
+    SPEC_LLM_ENDPOINT  (default: http://127.0.0.1:8080/v1/chat/completions)
+    SPEC_LLM_MODEL     model name for the request body (default: local)
+    SPEC_LLM_MAX_TOKENS (default: 400)
+  Shared: SPEC_LLM_TIMEOUT seconds    (default: 120)
 Token usage is extracted from the JSON stream and returned via predict_meta /
 appended to the ledger when called through the worker.
 """
@@ -35,8 +41,16 @@ from spec_families import parse_command  # noqa: E402
 MAX_TEST_FILES = 120
 
 
-def _test_file_listing(ws: Path) -> str:
-    """Bounded listing of test files / django labels to ground the model."""
+def _test_file_listing(ws: Path, problem_statement: str = "") -> str:
+    """Bounded listing of test files / django labels to ground the model.
+
+    [spec-localpred-v2] RELEVANCE-RANKED: the old version truncated in
+    rglob walk order, so on large repos (astropy: 400+ test files) the
+    correct file was often absent from the prompt entirely — the model was
+    asked to choose from a list that didn't contain the answer. Files are
+    now scored by token overlap with the problem statement; the cap keeps
+    prompts bounded but truncation drops the LEAST relevant files."""
+    import re as _re
     lines = []
     runtests = ws / "tests" / "runtests.py"
     if runtests.exists():
@@ -45,23 +59,43 @@ def _test_file_listing(ws: Path) -> str:
         lines.append("Available labels: " + ", ".join(labels[:200]))
     else:
         found = []
-        for p in ws.rglob("test_*.py"):
+        for p in ws.rglob("*.py"):
+            n = p.name
+            # test_*.py | unittest_*.py (pylint) | *_test.py (go-style)
+            if not (n.startswith("test_") or n.startswith("unittest_")
+                    or n.endswith("_test.py")):
+                continue
             rp = str(p.relative_to(ws))
             if "__pycache__" in rp or "/node_modules/" in rp:
                 continue
             found.append(rp)
-            if len(found) >= MAX_TEST_FILES:
+            if len(found) >= 4000:      # walk safety cap, not the prompt cap
                 break
-        lines.append("pytest-style repo. Test files (partial listing):")
-        lines.extend(found)
+        toks = set(_re.findall(r"[a-z0-9]{3,}", problem_statement.lower()))
+        def rel(item):
+            i, rp = item
+            ptoks = set(_re.findall(r"[a-z0-9]{3,}", rp.lower()))
+            ptoks -= {"tests", "test", "py"}   # ubiquitous, not signal
+            score = len(toks & ptoks)
+            # fixture/example trees are real files agents never invoke
+            if any(seg in rp.lower() for seg in
+                   ("example", "fixture", "testdata", "/data/", "sample")):
+                score -= 3
+            return (-score, i)                 # overlap desc, walk order tie
+        ranked = [rp for _, rp in sorted(enumerate(found), key=rel)]
+        lines.append("pytest-style repo. Test files (most relevant first, "
+                     "partial listing):")
+        lines.extend(ranked[:MAX_TEST_FILES])
     return "\n".join(lines)
 
 
 PROMPT_TEMPLATE = """You are predicting the FIRST test command a coding agent will run \
 for the software issue below. Do NOT run anything. Do NOT explain.
 
-Output a JSON array of exactly 3 strings, most likely first. Each string \
-is one verbatim runnable command (e.g. "python -m pytest path/to/test_file.py -q" \
+Output a JSON array of exactly 3 strings, most likely first. The 3 commands \
+must target DIFFERENT test files or labels, chosen from the listing below, so \
+they cover multiple plausible locations for this issue. Each string is one \
+verbatim runnable command (e.g. "python -m pytest path/to/test_file.py -q" \
 or "python tests/runtests.py label.module"). Output ONLY the JSON array — \
 no prose, no markdown fences, no numbering.
 
@@ -169,6 +203,46 @@ def _walk_tokens(obj, acc):
 
 
 
+def _openai_completion(prompt: str, timeout: float):
+    """One chat completion against an OpenAI-compatible endpoint.
+    Returns (text, tokens_dict, exit_code). urllib only — no deps."""
+    import urllib.request
+    import urllib.error
+    endpoint = os.environ.get("SPEC_LLM_ENDPOINT",
+                              "http://127.0.0.1:8080/v1/chat/completions")
+    body = json.dumps({
+        "model": os.environ.get("SPEC_LLM_MODEL", "local"),
+        "temperature": 0,
+        "max_tokens": int(os.environ.get("SPEC_LLM_MAX_TOKENS", "400")),
+        "messages": [
+            {"role": "system",
+             "content": "You predict shell commands. Respond with ONLY a "
+                        "JSON array of strings. No prose, no markdown, "
+                        "no thinking out loud."},
+            {"role": "user", "content": prompt},
+        ],
+    }).encode()
+    req = urllib.request.Request(endpoint, data=body,
+                                 headers={"Content-Type": "application/json"})
+    # bypass any http_proxy env (cluster proxies break localhost endpoints)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(req, timeout=timeout) as r:
+            resp = json.load(r)
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError,
+            json.JSONDecodeError) as e:
+        return "", {}, 1
+    text = ((resp.get("choices") or [{}])[0].get("message") or {}).get(
+        "content") or ""
+    # reasoning models (e.g. Qwen3) may wrap deliberation in <think> tags
+    if "</think>" in text:
+        text = text.rsplit("</think>", 1)[-1]
+    usage = resp.get("usage") or {}
+    tokens = {k: v for k, v in usage.items()
+              if isinstance(v, int) and "token" in k}
+    return text.strip(), tokens, 0
+
+
 _LAST_MSG_SUPPORT = {}
 
 
@@ -199,15 +273,52 @@ def predict_meta(workspace, problem_statement: str):
     else:
         prompt = PROMPT_TEMPLATE.format(
             problem=problem_statement[:6000],
-            listing=_test_file_listing(ws)[:6000])
+            listing=_test_file_listing(ws, problem_statement)[:6000])
     binary = os.environ.get("SPEC_LLM_BIN", "codex")
     extra = shlex.split(os.environ.get("SPEC_LLM_ARGS",
                                        "-c model_reasoning_effort=low"))
     timeout = float(os.environ.get("SPEC_LLM_TIMEOUT", "120"))
+    backend = os.environ.get("SPEC_LLM_MODE", "codex")
     # ---- invocation + parsing: spec-parse-v1 (see predict_parse.py) ----
     from predict_parse import (extract_agent_text, extract_usage,
                                extract_commands, looks_like_command)
     import tempfile
+    if backend == "openai":
+        t0 = time.time()
+        text, tokens, rc = _openai_completion(prompt, timeout)
+        source = "openai"
+        if mode == "generic":
+            validator = looks_like_command
+        else:
+            def validator(c):
+                p = parse_command(c)
+                return bool(p and p["targets"])
+        limit = 5 if mode == "generic" else 3
+        cmds = extract_commands(text, mode=mode, limit=limit,
+                                validator=validator)
+        meta = {"latency_s": round(time.time() - t0, 2), "tokens": tokens,
+                "n_raw_lines": len(text.splitlines()), "exit": rc,
+                "mode": mode, "text_source": source, "backend": "openai",
+                "parse": ("json" if text.lstrip().startswith("[")
+                          or "[\"" in text[:200] else "lines")}
+        cap = os.environ.get("SPEC_PRED_CAPTURE_DIR")
+        if cap:
+            try:
+                Path(cap).mkdir(parents=True, exist_ok=True)
+                rec = {"kind": "capture",
+                   "task": os.environ.get("SPEC_TASK_NAME") or ws.name,
+                   "ts": time.time(),
+                       "mode": mode, "prompt": prompt[:20000],
+                       "raw_stdout": "", "answer_text": text[:100000],
+                       "text_source": source, "predicted": cmds,
+                       "tokens": tokens, "latency_s": meta["latency_s"],
+                       "backend": "openai"}
+                (Path(cap) / f"pred_{os.environ.get('SPEC_TASK_NAME') or ws.name}_{int(time.time() * 1000)}.json"
+                 ).write_text(json.dumps(rec))
+                meta["capture"] = True
+            except OSError:
+                pass
+        return cmds, meta
     argv = [binary, "exec", "--json", "--sandbox", "read-only",
             "--skip-git-repo-check", *extra]
     last_msg_path = None
@@ -274,13 +385,15 @@ def predict_meta(workspace, problem_statement: str):
     if cap:
         try:
             Path(cap).mkdir(parents=True, exist_ok=True)
-            rec = {"kind": "capture", "task": ws.name, "ts": time.time(),
+            rec = {"kind": "capture",
+                   "task": os.environ.get("SPEC_TASK_NAME") or ws.name,
+                   "ts": time.time(),
                    "mode": mode, "prompt": prompt[:20000],
                    "raw_stdout": proc.stdout[-400000:],
                    "answer_text": text[:100000],
                    "text_source": source, "predicted": cmds,
                    "tokens": tokens, "latency_s": meta["latency_s"]}
-            (Path(cap) / f"pred_{ws.name}_{int(time.time() * 1000)}.json"
+            (Path(cap) / f"pred_{os.environ.get('SPEC_TASK_NAME') or ws.name}_{int(time.time() * 1000)}.json"
              ).write_text(json.dumps(rec))
             meta["capture"] = True
         except OSError:

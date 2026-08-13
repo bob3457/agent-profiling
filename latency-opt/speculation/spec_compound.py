@@ -122,6 +122,11 @@ def _top_level_split(cmd):
         if depth == 0 and c == ";":
             parts.append(("".join(buf).strip(), False)); buf = []
             i += 1; continue
+        if depth == 0 and c in ("\n", "\r"):
+            # bash: unquoted newline separates commands like `;`
+            # (heredocs are refused before splitting, quotes handled above)
+            parts.append(("".join(buf).strip(), False)); buf = []
+            i += 1; continue
         if two == "||":
             if depth == 0:
                 return None             # top-level || changes semantics
@@ -237,6 +242,84 @@ def fold_cd_serve(parts, cwd):
     return parts, cwd
 
 
+_RO_SIMPLE = {"ls", "pwd", "echo", "printf", "true", "false", "wc", "cat",
+              "head", "tail", "grep", "rg", "egrep", "fgrep", "which",
+              "file", "stat", "du", "date", "uname", "id", "whoami", "nl",
+              "cut", "sort", "uniq", "tr", "column", "basename", "dirname",
+              "realpath", "readlink", "md5sum", "sha256sum", "test", "[",
+              "diff", "comm"}
+_RO_GIT = {"diff", "status", "log", "show", "rev-parse", "ls-files",
+           "describe", "branch"}
+_FIND_FORBID = {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint",
+                "-fprintf", "-fls"}
+
+
+def _split_pipeline(text):
+    """Split one part on top-level `|` (quote-aware); None on scan trouble."""
+    stages, buf, quote, i = [], [], None, 0
+    while i < len(text):
+        c = text[i]
+        if quote:
+            buf.append(c)
+            if c == quote:
+                quote = None
+            i += 1; continue
+        if c in ("\'", '"'):
+            quote = c; buf.append(c); i += 1; continue
+        if c == "|":
+            if text[i:i + 2] == "||":
+                return None
+            stages.append("".join(buf)); buf = []; i += 1; continue
+        buf.append(c); i += 1
+    if quote:
+        return None
+    stages.append("".join(buf))
+    return [s.strip() for s in stages if s.strip()]
+
+
+def ro_passthrough(text: str) -> bool:
+    """True iff this part is safe to execute LIVE ahead of serving later
+    cached parts: provably read-only (no workspace/env mutation), so the
+    cached results behind it stay valid. Strict by construction — a miss
+    here costs a serve, a false positive corrupts one."""
+    import shlex
+    if _ASSIGN_RE.match(text) or text.lstrip().startswith("("):
+        return False
+    if is_state_cmd(text) or is_cd_cmd(text):
+        return False
+    if _scan_outside_quotes(text, (">",)):          # any output redirect
+        return False
+    if _scan_outside_quotes(text, ("$(", "<(", ">(", "`", "<<")):
+        return False
+    stages = _split_pipeline(text)
+    if not stages:
+        return False
+    for st in stages:
+        try:
+            toks = shlex.split(st)
+        except ValueError:
+            return False
+        if not toks:
+            return False
+        head = os.path.basename(toks[0])
+        if head == "git":
+            if len(toks) < 2 or toks[1] not in _RO_GIT:
+                return False
+        elif head == "sed":
+            if "-n" not in toks or any(t == "-i" or t.startswith("-i")
+                                       for t in toks[1:]):
+                return False
+        elif head == "find":
+            if any(t in _FIND_FORBID for t in toks):
+                return False
+        elif head == "command":
+            if len(toks) < 2 or toks[1] != "-v":
+                return False
+        elif head not in _RO_SIMPLE:
+            return False
+    return True
+
+
 def rejoin(parts) -> str:
     """Re-join 3-tuple parts into one command preserving joiners."""
     out = []
@@ -343,4 +426,24 @@ if __name__ == "__main__":
     print(f"{OK if ok else BAD} state/cd predicates")
     good &= ok
 
+    # -------- spec-serve-v1: newline split + ro_passthrough --------
+    scheck("pytest x -q\ngit diff --check\ngit status --short",
+           [("pytest x -q", False, True), ("git diff --check", False, True),
+            ("git status --short", True, True)])
+    check("pytest x -q\ngit diff --check", ["pytest x -q", "git diff --check"])
+    ro_cases = [
+        ("git diff --check", True), ("git diff -- a.py b.py", True),
+        ("git status --short", True), ("git checkout HEAD~1 f.py", False),
+        ("git stash", False), ("ls -la", True), ("grep -RIn pat src", True),
+        ("grep pat f | head -40", True), ("sed -n '1,50p' f.py", True),
+        ("sed -i 's/a/b/' f.py", False), ("sed '1,50p' f.py", False),
+        ("find . -name '*.py'", True), ("find . -name x -delete", False),
+        ("command -v python3.9", True), ("rm -rf build", False),
+        ("pytest x.py -q", False), ("echo hi > f", False),
+        ("cat f | tee g", False), ("python --version", False),
+        ("x=1", False), ("cd sub", False)]
+    for t, want in ro_cases:
+        got = ro_passthrough(t)
+        good &= got == want
+        print(f"{OK if got == want else BAD} ro {t!r:<38} -> {got}")
     raise SystemExit(0 if good else 1)

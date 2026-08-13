@@ -520,8 +520,11 @@ def main():
                     plan.append("pytest_targeted")
             elif pc["family"] == "django":
                 ctx.setdefault("django_labels", [])
-                ctx["django_labels"] += [t.split(".")[0] for t in pc["targets"]
-                                         if t.split(".")[0] not in ctx["django_labels"]]
+                for t in pc["targets"]:
+                    # keep the model's full granularity AND the parent label
+                    for lab in (t, t.split(".")[0]):
+                        if lab not in ctx["django_labels"]:
+                            ctx["django_labels"].append(lab)
                 if "django_targeted" not in plan:
                     plan.append("django_targeted")
         if ctx.get("direct_cmds") and "llm_direct" not in plan:

@@ -50,6 +50,7 @@ ACT='export PATH=/opt/miniconda3/envs/testbed/bin:/opt/miniconda3/bin:$PATH; exp
 # ---------------------------------------------------------------- speculation
 WORKER_PID=""
 if [[ $MODE == spec ]]; then
+  export SPEC_TASK_NAME=$IID
   cp "$PROMPT_FILE" "$RESULTS/logs/problem.txt"
   apptainer exec --writable-tmpfs "${BINDS[@]}" "$SIF" bash -c "$ACT
     export SPEC_LLM_BIN=/usr/local/bin/codex
