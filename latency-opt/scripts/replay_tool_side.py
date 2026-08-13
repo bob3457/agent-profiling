@@ -69,11 +69,24 @@ def reset_workspace(mode: str, workspace: str):
 
 # ------------------------------------------------------------------ stock leg
 def run_stock(cmds, login: bool):
+    """Fresh `bash -lc` per command. If SPEC_PERF_DIR is set, each command is
+    additionally wrapped in perf stat + /usr/bin/time -v (spec_perf schema,
+    label=replay), turning a recorded trajectory into per-command PMU data
+    with zero LLM cost. Timing below still measures the wrapped process, so
+    only use perf-enabled replays for CPU characterization, not for the
+    stock-vs-daemon latency delta."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "speculation"))
+    import spec_perf
     per_cmd = []
-    for c in cmds:
+    for i, c in enumerate(cmds):
         argv = ["bash", "-lc" if login else "-c", c["cmd"]]
         t0 = time.perf_counter()
-        subprocess.run(argv, cwd=c["cwd"], capture_output=True)
+        try:
+            spec_perf.run_profiled(argv, label="replay", cmd_text=c["cmd"],
+                                   extra={"seq": i}, cwd=c["cwd"],
+                                   timeout=None)
+        except OSError:
+            pass
         per_cmd.append(time.perf_counter() - t0)
     return per_cmd
 
