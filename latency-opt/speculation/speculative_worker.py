@@ -48,6 +48,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from spec_gate import should_speculate  # noqa: E402
+import spec_perf  # noqa: E402  (per-command perf wrapping; no-op unless SPEC_PERF_DIR)
 
 
 # ---------------------------------------------------------------- fingerprint
@@ -241,9 +242,10 @@ def act_pytest_targeted(ws, ctx):
     ids = []
     for t in targets:
         try:
-            proc = subprocess.run(
-                ["bash", "-c", f"python -m pytest {t} --collect-only -q"],
-                cwd=ws, capture_output=True, text=True, timeout=120)
+            probe = f"python -m pytest {t} --collect-only -q"
+            proc = spec_perf.run_profiled(
+                ["bash", "-c", probe], label="probe", cmd_text=probe,
+                cwd=ws, timeout=120)
             for line in proc.stdout.splitlines():
                 line = line.strip()
                 if "::" in line and not line.startswith(("=", "warning")):
@@ -570,9 +572,10 @@ def main():
                 _mark_inflight(cache_dir, ikey, cmd)
             t0 = time.time()
             try:
-                proc = subprocess.run(["bash", "-c", cmd], cwd=ws,
-                                      capture_output=True, text=True,
-                                      timeout=args.timeout_per_cmd)
+                proc = spec_perf.run_profiled(
+                    ["bash", "-c", cmd], label="worker", cmd_text=cmd,
+                    extra={"action": name, "cacheable": str(cacheable)},
+                    cwd=ws, timeout=args.timeout_per_cmd)
             except subprocess.TimeoutExpired:
                 print(f"[spec] TIMEOUT {cmd!r}")
                 if ikey:

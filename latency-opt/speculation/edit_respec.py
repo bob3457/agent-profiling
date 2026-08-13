@@ -66,6 +66,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import spec_perf  # noqa: E402  (per-command perf wrapping; no-op unless SPEC_PERF_DIR)
+
 # Superset of the daemon's FP_EXCLUDE: also ignore artifacts our own re-runs
 # (and the agent's runs) create, so re-run side effects don't retrigger us.
 EXCLUDE = {
@@ -497,10 +500,13 @@ def main():
             os.setsid()                      # tree; nice as before
             os.nice(10)
 
-        pr = subprocess.Popen(["bash", "-lc", cmd], cwd=ws, text=True,
+        argv, perf_dir = spec_perf.wrap_argv(["bash", "-lc", cmd],
+                                             label="respec", cmd_text=cmd)
+        pr = subprocess.Popen(argv, cwd=ws, text=True,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                               preexec_fn=_pre)
         pr._cmd, pr._t0 = cmd, time.time()
+        pr._perf_dir, pr._t0_ns = perf_dir, time.time_ns()
         CURRENT_PROCS.add(pr)
         return pr
 
@@ -508,7 +514,11 @@ def main():
         out, err = pr.communicate()
         CURRENT_PROCS.discard(pr)
         dur = time.time() - pr._t0
-        if read_generation(cache_dir) != gen:
+        raced = read_generation(cache_dir) != gen
+        spec_perf.finalize(pr._perf_dir, pr.returncode, pr._t0_ns,
+                           time.time_ns(), "respec", pr._cmd,
+                           {"gen": str(gen), "raced": raced})
+        if raced:
             _log(f"gen {gen}: raced by newer edit, discarding {pr._cmd!r}")
             try:
                 _inflight_path(pr._cmd).unlink()
@@ -625,10 +635,10 @@ def main():
         for f in files[:3]:
             if f not in node_cache:
                 try:
-                    r = subprocess.run(
-                        ["bash", "-lc",
-                         f"python -m pytest --collect-only -q {f}"],
-                        cwd=ws, text=True, capture_output=True, timeout=60,
+                    probe = f"python -m pytest --collect-only -q {f}"
+                    r = spec_perf.run_profiled(
+                        ["bash", "-lc", probe], label="probe", cmd_text=probe,
+                        cwd=ws, timeout=60,
                         preexec_fn=lambda: os.nice(10))
                     node_cache[f] = [ln.strip() for ln in r.stdout.splitlines()
                                      if "::" in ln][:MAX_NODES_PER_FILE]

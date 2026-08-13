@@ -133,6 +133,16 @@ run_one() {  # $1 bench, $2 task_id
       export CODEX_SHELLD_SPEC=$run_dir/spec_cache
       export SPEC_CPU_OUT=$run_dir
       mkdir -p "$CODEX_SHELLD_SPEC"
+      # SPEC_PERF=1: per-command perf stat + time -v around every SPECULATIVE
+      # execution (worker plan cmds, probes, respec re-runs), one dir per
+      # command under spec_perf/, same schema as codex_tool_perf_wrap.sh.
+      # Off by default; counting mode, but explicit opt-in keeps latency
+      # campaigns byte-identical to prior arms unless asked.
+      if [[ "${SPEC_PERF:-0}" == "1" ]]; then
+        export SPEC_PERF_DIR=$run_dir/spec_perf
+        export SPEC_PERF_EVENTS="${SPEC_PERF_EVENTS:-$PERF_EVENTS}"
+        mkdir -p "$SPEC_PERF_DIR"
+      fi
       printf '%s' "$prompt" > "$run_dir/problem.txt"
       # T=0 ungated worker: recon everywhere; on TB also the LLM predictor in
       # DIRECT-ONLY mode (tier0 reads; family/heavy predictions stay gated).
