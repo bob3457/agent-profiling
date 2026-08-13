@@ -89,6 +89,19 @@ def _test_file_listing(ws: Path, problem_statement: str = "") -> str:
     return "\n".join(lines)
 
 
+def _pred_limit(mode):
+    """Parse-time prediction depth. SPEC_PRED_TOPK=N truncates the model's
+    ranked list to its top-N valid commands (prompt still asks for 3, so
+    offline captures stay replay-comparable; rank-1 is taken verbatim).
+    Unset/0 keeps the full default depth (generic=5, tests=3)."""
+    limit = 5 if mode == "generic" else 3
+    try:
+        topk = int(os.environ.get("SPEC_PRED_TOPK", "0") or 0)
+    except ValueError:
+        topk = 0
+    return min(limit, topk) if topk > 0 else limit
+
+
 PROMPT_TEMPLATE = """You are predicting the FIRST test command a coding agent will run \
 for the software issue below. Do NOT run anything. Do NOT explain.
 
@@ -293,7 +306,7 @@ def predict_meta(workspace, problem_statement: str):
             def validator(c):
                 p = parse_command(c)
                 return bool(p and p["targets"])
-        limit = 5 if mode == "generic" else 3
+        limit = _pred_limit(mode)
         cmds = extract_commands(text, mode=mode, limit=limit,
                                 validator=validator)
         meta = {"latency_s": round(time.time() - t0, 2), "tokens": tokens,
@@ -370,7 +383,7 @@ def predict_meta(workspace, problem_statement: str):
         def validator(c):
             p = parse_command(c)
             return bool(p and p["targets"])
-    limit = 5 if mode == "generic" else 3
+    limit = _pred_limit(mode)
     cmds = extract_commands(text, mode=mode, limit=limit,
                             validator=validator)
     meta = {"latency_s": round(time.time() - t0, 2), "tokens": tokens,
