@@ -52,24 +52,6 @@ import time
 import uuid
 from pathlib import Path
 
-# cpuset-fence: self-pin based on env; no-op when unset
-import os as _os
-def _parse_cpuset(_s):
-    cpus = set()
-    for part in _s.split(","):
-        if "-" in part:
-            a, b = part.split("-"); cpus.update(range(int(a), int(b)+1))
-        elif part: cpus.add(int(part))
-    return cpus
-def _pin(env_key):
-    _cs = _os.environ.get(env_key)
-    if _cs:
-        try: _os.sched_setaffinity(0, _parse_cpuset(_cs))
-        except (OSError, ValueError): pass
-def _pin_agent(): _pin("AGENT_CPUSET")
-def _pin_spec(): _pin("SPEC_CPUSET")
-
-
 CLK_TCK = os.sysconf("SC_CLK_TCK")
 
 
@@ -180,7 +162,6 @@ class ShellSession:
         self.proc = subprocess.Popen(
             args,
             stdin=subprocess.PIPE,
-            preexec_fn=_pin_agent,
             stdout=subprocess.DEVNULL,
             stderr=open(os.path.join(self.ctl_dir, "session_bash.stderr"), "w"),
             start_new_session=True,  # own pgid: timeout-kill nukes whole tree

@@ -69,25 +69,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import spec_perf  # noqa: E402  (per-command perf wrapping; no-op unless SPEC_PERF_DIR)
 
-# cpuset-fence: self-pin based on env; no-op when unset
-import os as _os
-def _parse_cpuset(_s):
-    cpus = set()
-    for part in _s.split(","):
-        if "-" in part:
-            a, b = part.split("-"); cpus.update(range(int(a), int(b)+1))
-        elif part: cpus.add(int(part))
-    return cpus
-def _pin(env_key):
-    _cs = _os.environ.get(env_key)
-    if _cs:
-        try: _os.sched_setaffinity(0, _parse_cpuset(_cs))
-        except (OSError, ValueError): pass
-def _pin_agent(): _pin("AGENT_CPUSET")
-def _pin_spec(): _pin("SPEC_CPUSET")
-_pin_spec()
-
-
 # Superset of the daemon's FP_EXCLUDE: also ignore artifacts our own re-runs
 # (and the agent's runs) create, so re-run side effects don't retrigger us.
 EXCLUDE = {

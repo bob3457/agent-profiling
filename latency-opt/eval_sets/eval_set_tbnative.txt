@@ -1,0 +1,6 @@
+terminalbench	regex-chess
+terminalbench	llm-inference-batching-scheduler
+terminalbench	protein-assembly
+terminalbench	train-fasttext
+terminalbench	gpt2-codegolf
+terminalbench	path-tracing

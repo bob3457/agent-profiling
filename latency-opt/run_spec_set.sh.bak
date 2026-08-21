@@ -5,7 +5,6 @@
 # Sequential on purpose: one agent + one worker + one watcher per node at a
 # time keeps the perf numbers clean. Failures don't stop the sweep.
 set -uo pipefail
-source /scratch/czhai/cpuset-patch/cpuset.sh  # cpuset-fence
 ROOT=${ROOT:-/projects/kzhou6/czhai/agent-profiling}
 HARNESS=$ROOT/latency-opt/harness/run_option_b.sh
 OUT=${RESULTS_BASE:-/scratch/czhai/latency-eval/optionb}

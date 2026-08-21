@@ -292,6 +292,10 @@ def predict_meta(workspace, problem_statement: str):
                                        "-c model_reasoning_effort=low"))
     timeout = float(os.environ.get("SPEC_LLM_TIMEOUT", "120"))
     backend = os.environ.get("SPEC_LLM_MODE", "codex")
+    if backend not in ("codex", "openai"):
+        raise SystemExit(f"SPEC_LLM_MODE={backend!r} unknown (use 'codex' or "
+                         f"'openai' for the local llama.cpp endpoint); refusing "
+                         f"to silently fall back")
     # ---- invocation + parsing (see predict_parse.py) ----
     from predict_parse import (extract_agent_text, extract_usage,
                                extract_commands, looks_like_command)
